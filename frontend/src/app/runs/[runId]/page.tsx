@@ -16,8 +16,9 @@ import {
   simulateRun,
   terminateRun,
   type ActivityLogRow,
+  type RunDetail,
 } from "@/lib/api";
-import { Button, Field, StatusBadge, fmtTime, fromNow, inputCls, usePoll } from "@/components/ui";
+import { Button, StatusBadge, fmtTime, fromNow, inputCls, usePoll } from "@/components/ui";
 
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
@@ -35,19 +36,28 @@ export default function RunDetailPage() {
 
   return (
     <section className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Link href="/" className="text-sm underline">
-          &larr; runs
-        </Link>
-        <h1 className="text-lg font-semibold">
-          {run ? run.order_id : runId}
-          {run && <span className="ml-2 align-middle"><StatusBadge status={run.status} /></span>}
-          {live?.paused && (
-            <span className="ml-2 align-middle rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-300">
-              paused
-            </span>
-          )}
-        </h1>
+      <div>
+        <div className="flex items-center gap-3">
+          <Link href="/" className="text-sm underline">
+            &larr; all runs
+          </Link>
+          <h1 className="text-lg font-semibold">
+            Order {run ? run.order_id : runId}
+            {run && (
+              <span className="ml-2 align-middle">
+                <StatusBadge status={run.status} />
+              </span>
+            )}
+            {live?.paused && (
+              <span className="ml-2 align-middle rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                paused
+              </span>
+            )}
+          </h1>
+        </div>
+        <p className="mt-1 text-xs text-neutral-500">
+          One Temporal workflow supervises this order. The page refreshes every 3s while it runs.
+        </p>
       </div>
 
       {error && <p className="text-sm text-red-600">Failed to load run: {error}</p>}
@@ -55,91 +65,52 @@ export default function RunDetailPage() {
       <div className="grid gap-8 lg:grid-cols-[1.8fr_1fr]">
         {/* left: state + timeline */}
         <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 rounded border border-neutral-200 p-4 text-sm dark:border-neutral-800 sm:grid-cols-3">
-            <Meta label="status" value={run?.status ?? "-"} />
-            <Meta
-              label="next wake"
-              value={
-                run?.next_wake_at
-                  ? `${fromNow(run.next_wake_at)} (${fmtTime(run.next_wake_at)})`
-                  : "-"
-              }
-            />
-            <Meta label="updated" value={fmtTime(run?.updated_at)} />
-            <Meta label="queued events" value={live ? String(live.queued_events) : "?"} />
-            <Meta label="agent wakes" value={live ? String(live.processed_wakes) : "?"} />
-            <Meta
-              label="paused"
-              value={live ? String(live.paused) : "?"}
-            />
-            <Meta
-              label="workflow id"
-              value={run?.workflow_id ?? "-"}
-              mono
-              className="col-span-full"
-            />
-            {live && live.standing_instructions.length > 0 && (
-              <Meta
-                label="standing instructions"
-                value={live.standing_instructions.join(" | ")}
-                className="col-span-full"
-              />
-            )}
-            {live?.wakeup_guidance && (
-              <Meta
-                label="agent wake-up guidance"
-                value={live.wakeup_guidance}
-                className="col-span-full"
-              />
-            )}
-            {live?.last_reasoning && (
-              <Meta
-                label="last agent reasoning"
-                value={live.last_reasoning}
-                className="col-span-full"
-              />
-            )}
-          </div>
+          <StatePanel run={run} live={live} />
 
-          <div>
-            <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-              Memory summary
-            </h2>
+          <Section
+            title="Memory summary"
+            hint="A compact rolling summary the agent rewrites on every wake."
+          >
             <pre className="whitespace-pre-wrap rounded bg-neutral-100 p-3 text-xs dark:bg-neutral-900">
-              {live?.memory_summary || run?.memory_summary || "(empty)"}
+              {live?.memory_summary || run?.memory_summary || "(empty so far)"}
             </pre>
-          </div>
+          </Section>
 
           {finalRow && (
-            <div>
-              <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-                Final output
-              </h2>
+            <Section
+              title="Final output"
+              hint="Produced by the agent as the last step when the workflow ended."
+            >
               <FinalOutput payload={finalRow.payload} />
-            </div>
+            </Section>
           )}
 
-          <div>
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-              Timeline ({timeline.length})
-            </h2>
+          <Section
+            title={`Timeline (${timeline.length})`}
+            hint="Newest first. Each row is one event, wake/sleep decision, action, or instruction. Open 'details' for the raw record."
+          >
             <ol className="space-y-2">
-              {timeline.length === 0 && <li className="text-sm text-neutral-400">(nothing yet)</li>}
+              {timeline.length === 0 && (
+                <li className="text-sm text-neutral-400">Nothing has happened yet.</li>
+              )}
               {[...timeline].reverse().map((a) => (
                 <TimelineItem key={a.id} row={a} />
               ))}
             </ol>
-          </div>
+          </Section>
         </div>
 
         {/* right: control panel */}
         <aside className="space-y-4">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
-            Control panel
-          </h2>
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
+              Control panel
+            </h2>
+            <p className="mt-1 text-xs text-neutral-500">Drive the run: feed it events or instructions, or change its lifecycle.</p>
+          </div>
           {done && (
             <p className="rounded bg-neutral-100 p-2 text-xs text-neutral-500 dark:bg-neutral-900">
-              Run is {run?.status}. Signals are disabled.
+              This run is {run?.status}. The workflow has ended, so these controls are disabled.
             </p>
           )}
           <ScenarioCard runId={runId} disabled={done} onDone={refresh} />
@@ -154,6 +125,97 @@ export default function RunDetailPage() {
         </aside>
       </div>
     </section>
+  );
+}
+
+function Section({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">{title}</h2>
+      {hint && <p className="mb-2 mt-0.5 text-xs text-neutral-500">{hint}</p>}
+      {children}
+    </div>
+  );
+}
+
+function StatePanel({
+  run,
+  live,
+}: {
+  run: RunDetail["run"] | undefined;
+  live: RunDetail["live"];
+}) {
+  const yn = (b: boolean | undefined) => (b === undefined ? "?" : b ? "yes" : "no");
+  return (
+    <div className="space-y-4 rounded border border-neutral-200 p-4 dark:border-neutral-800">
+      <div>
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          Run record
+        </div>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+          <Meta label="status" value={run?.status ?? "-"} />
+          <Meta
+            label="next scheduled wake"
+            value={
+              run?.next_wake_at
+                ? `${fromNow(run.next_wake_at)} (${fmtTime(run.next_wake_at)})`
+                : "not scheduled yet"
+            }
+          />
+          <Meta label="last updated" value={run ? fromNow(run.updated_at) : "-"} />
+          <Meta label="workflow id" value={run?.workflow_id ?? "-"} mono className="col-span-full" />
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          Live agent state
+          <span className="ml-2 font-normal normal-case text-neutral-400">
+            queried from the running workflow
+          </span>
+        </div>
+        {live ? (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+            <Meta label="agent wakes so far" value={String(live.processed_wakes)} />
+            <Meta label="events waiting in queue" value={String(live.queued_events)} />
+            <Meta label="paused" value={yn(live.paused)} />
+            {live.standing_instructions.length > 0 && (
+              <Meta
+                label="standing instructions"
+                value={live.standing_instructions.join("  •  ")}
+                className="col-span-full"
+              />
+            )}
+            {live.wakeup_guidance && (
+              <Meta
+                label="wake-up guidance the agent wrote for the classifier"
+                value={live.wakeup_guidance}
+                className="col-span-full"
+              />
+            )}
+            {live.last_reasoning && (
+              <Meta
+                label="agent's reasoning at its last wake"
+                value={live.last_reasoning}
+                className="col-span-full"
+              />
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-400">
+            Unavailable (the workflow has ended, or the worker is down).
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -189,15 +251,15 @@ function TimelineItem({ row }: { row: ActivityLogRow }) {
   const p = row.payload as Record<string, unknown>;
   const s = (k: string, fallback = "?") => (p[k] == null ? fallback : String(p[k]));
   let headline: string = row.type;
-  if (row.type === "incoming_event") headline = `event: ${s("type")}`;
+  if (row.type === "incoming_event") headline = `event received: ${s("type")}`;
   else if (row.type === "wake_decision")
     headline =
       p.stage === "classifier"
-        ? `classifier: ${p.wake_now ? "WAKE" : "stay asleep"} (${s("importance")})`
-        : `agent wake (${s("reason")}), then sleep ${s("next_sleep_seconds")}s`;
-  else if (row.type === "agent_action") headline = `action: ${s("tool")}`;
+        ? `classifier decided: ${p.wake_now ? "wake the agent now" : "stay asleep"} (${s("importance")})`
+        : `agent woke (${s("reason")}), then slept ${s("next_sleep_seconds")}s`;
+  else if (row.type === "agent_action") headline = `agent action: ${s("tool")}`;
   else if (row.type === "manual_instruction") headline = "instruction added";
-  else if (row.type === "final_output") headline = "final output";
+  else if (row.type === "final_output") headline = "final output produced";
 
   return (
     <li
@@ -218,7 +280,7 @@ function TimelineItem({ row }: { row: ActivityLogRow }) {
         </p>
       )}
       <details className="mt-1">
-        <summary className="cursor-pointer text-neutral-500">payload</summary>
+        <summary className="cursor-pointer text-neutral-500">details</summary>
         <pre className="mt-1 overflow-x-auto rounded bg-neutral-100 p-2 dark:bg-neutral-900">
           {JSON.stringify(row.payload, null, 2)}
         </pre>
@@ -235,7 +297,9 @@ function FinalOutput({ payload }: { payload: Record<string, unknown> }) {
       {(["important_actions", "key_learnings", "feedback"] as const).map((k) =>
         arr(k).length ? (
           <div key={k}>
-            <div className="text-xs uppercase tracking-wide text-neutral-500">{k.replace("_", " ")}</div>
+            <div className="text-xs uppercase tracking-wide text-neutral-500">
+              {k.replace("_", " ")}
+            </div>
             <ul className="list-inside list-disc text-neutral-600 dark:text-neutral-400">
               {arr(k).map((x, i) => (
                 <li key={i}>{x}</li>
@@ -249,10 +313,21 @@ function FinalOutput({ payload }: { payload: Record<string, unknown> }) {
 }
 
 // Control-panel cards.
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="space-y-2 rounded border border-neutral-200 p-3 dark:border-neutral-800">
-      <h3 className="text-sm font-medium">{title}</h3>
+      <div>
+        <h3 className="text-sm font-medium">{title}</h3>
+        {hint && <p className="text-xs text-neutral-500">{hint}</p>}
+      </div>
       {children}
     </div>
   );
@@ -310,7 +385,10 @@ function InjectEventCard({
   }
 
   return (
-    <Card title="Inject event">
+    <Card
+      title="Inject one event"
+      hint="Delivered as a signal. The classifier then decides whether it wakes the agent."
+    >
       <form onSubmit={submit} className="space-y-2">
         <select
           className={inputCls}
@@ -323,7 +401,7 @@ function InjectEventCard({
               {t}
             </option>
           ))}
-          <option value="__custom__">custom...</option>
+          <option value="__custom__">custom (unknown type)...</option>
         </select>
         {type === "__custom__" && (
           <input
@@ -339,6 +417,7 @@ function InjectEventCard({
           value={payloadRaw}
           onChange={(e) => setPayloadRaw(e.target.value)}
           disabled={disabled}
+          aria-label="event payload JSON"
         />
         <Button type="submit" disabled={disabled || busy}>
           {busy ? "sending..." : "Send event"}
@@ -379,18 +458,20 @@ function InstructionCard({
   }
 
   return (
-    <Card title="Add instruction">
+    <Card
+      title="Add an instruction"
+      hint="Becomes a standing instruction in this run's context and wakes the agent."
+    >
       <form onSubmit={submit} className="space-y-2">
-        <Field label="">
-          <textarea
-            className={inputCls + " h-20 text-xs"}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="offer a 10% goodwill credit"
-            disabled={disabled}
-            required
-          />
-        </Field>
+        <textarea
+          className={inputCls + " h-20 text-xs"}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="e.g. if shipment is delayed, escalate to logistics and offer a credit"
+          disabled={disabled}
+          required
+          aria-label="instruction text"
+        />
         <Button type="submit" disabled={disabled || busy || !text.trim()}>
           {busy ? "sending..." : "Send instruction"}
         </Button>
@@ -445,9 +526,8 @@ function LifecycleCard({
           type="button"
           disabled={disabled || !!busy}
           onClick={() => act("interrupt", () => interruptRun(runId))}
-          title="Force an immediate agent wake to re-assess (non-terminal)"
         >
-          {busy === "interrupt" ? "..." : "Interrupt (wake now)"}
+          {busy === "interrupt" ? "..." : "Interrupt"}
         </Button>
         <Button
           type="button"
@@ -464,6 +544,11 @@ function LifecycleCard({
           {busy === "terminate" ? "..." : "Terminate"}
         </Button>
       </div>
+      <ul className="mt-1 space-y-0.5 text-xs text-neutral-500">
+        <li><b>Pause</b> stops agent inference; events still queue.</li>
+        <li><b>Interrupt</b> wakes the agent now to re-check. The run keeps going.</li>
+        <li><b>Terminate</b> ends the run now and writes a final report.</li>
+      </ul>
       <Note msg={msg} />
     </Card>
   );
@@ -507,7 +592,10 @@ function ScenarioCard({
   }
 
   return (
-    <Card title="Event generator">
+    <Card
+      title="Event generator"
+      hint="Replays a canned sequence of order events into this run, a couple of seconds apart."
+    >
       <select
         className={inputCls}
         value={name}
@@ -517,7 +605,7 @@ function ScenarioCard({
         {Object.keys(scenarios).length === 0 && <option value="">(no scenarios)</option>}
         {Object.entries(scenarios).map(([k, evs]) => (
           <option key={k} value={k}>
-            {k} ({evs.length})
+            {k} ({evs.length} events)
           </option>
         ))}
       </select>

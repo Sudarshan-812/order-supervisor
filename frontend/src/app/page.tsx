@@ -16,9 +16,15 @@ export default function RunsPage() {
 
   return (
     <section className="space-y-8">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Runs</h1>
-        <span className="text-xs text-neutral-500">auto-refresh 3s</span>
+      <div>
+        <div className="flex items-baseline justify-between">
+          <h1 className="text-xl font-semibold">Runs</h1>
+          <span className="text-xs text-neutral-500">auto-refresh 3s</span>
+        </div>
+        <p className="mt-1 text-sm text-neutral-500">
+          A run is one supervised order, backed by one long-running workflow. Start one below,
+          then open it to feed it events and watch the agent wake, act, and sleep.
+        </p>
       </div>
 
       <StartRunPanel onStarted={refresh} />
@@ -149,7 +155,7 @@ function StartRunPanel({ onStarted }: { onStarted: () => void }) {
         </select>
       </Field>
 
-      <Field label="Order ID">
+      <Field label="Order ID" hint="any string; one workflow is started per order id">
         <input
           className={inputCls}
           value={orderId}
@@ -159,7 +165,10 @@ function StartRunPanel({ onStarted }: { onStarted: () => void }) {
         />
       </Field>
 
-      <Field label="order_context (JSON)">
+      <Field
+        label="Order context (JSON)"
+        hint="arbitrary details the agent sees from its first wake"
+      >
         <textarea
           className={inputCls + " h-24 font-mono text-xs"}
           value={contextRaw}
@@ -167,12 +176,15 @@ function StartRunPanel({ onStarted }: { onStarted: () => void }) {
         />
       </Field>
 
-      <Field label="run_instructions (one per line)" hint="extra standing instructions for this run">
+      <Field
+        label="Run instructions (one per line)"
+        hint="optional standing instructions added to this run's context"
+      >
         <textarea
           className={inputCls + " h-24 text-xs"}
           value={instructionsRaw}
           onChange={(e) => setInstructionsRaw(e.target.value)}
-          placeholder="keep the customer informed"
+          placeholder="keep the customer informed at every step"
         />
       </Field>
 

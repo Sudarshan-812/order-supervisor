@@ -15,7 +15,13 @@ export default function SupervisorsPage() {
 
   return (
     <section className="space-y-8">
-      <h1 className="text-xl font-semibold">Supervisor templates</h1>
+      <div>
+        <h1 className="text-xl font-semibold">Supervisor templates</h1>
+        <p className="mt-1 text-sm text-neutral-500">
+          A reusable config for the agent: its base instruction, which of the 5 actions it may
+          use, how long it sleeps by default, and how eagerly it wakes. Every run picks one.
+        </p>
+      </div>
 
       <NewTemplateForm onCreated={refresh} />
 
