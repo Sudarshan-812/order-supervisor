@@ -1,6 +1,9 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // This app is the workspace root; ignore stray lockfiles higher up the tree.
+  outputFileTracingRoot: path.join(__dirname),
   async rewrites() {
     // Proxy API calls to the FastAPI backend during dev.
     return [
