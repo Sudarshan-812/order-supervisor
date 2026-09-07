@@ -17,3 +17,5 @@ frontend/.env.local
 .DS_Store
 .idea/
 .vscode/
+.neon
+.env.local

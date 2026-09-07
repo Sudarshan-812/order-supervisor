@@ -1,62 +1,77 @@
 -- ===========================================================================
--- Order Supervisor - database schema
+-- Order Supervisor - Supabase schema
 -- ---------------------------------------------------------------------------
--- Everything lives in an isolated schema ({schema}, default `order_supervisor`)
--- so it can share a database with other projects without collisions.
--- `{schema}` is substituted by app/db.py at startup from settings.db_schema.
+-- Run this as-is in the Supabase SQL editor (or `psql`). It creates the three
+-- tables the POC needs in the `public` schema.
+--
+-- Enum-like columns are plain TEXT + CHECK so the POC stays migration-free.
+-- A few operational columns beyond the base spec are marked [ops] and can be
+-- dropped if unused.
 -- ===========================================================================
 
-CREATE SCHEMA IF NOT EXISTS {schema};
+-- gen_random_uuid() lives in pgcrypto; Supabase enables it by default, this is
+-- just belt-and-braces for a bare Postgres.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-SET search_path TO {schema};
-
--- --- Supervisor templates -------------------------------------------------
-CREATE TABLE IF NOT EXISTS {schema}.supervisors (
+-- --- Supervisor templates ------------------------------------------------
+-- Reusable "what kind of supervisor is this" definitions. A run points at one.
+CREATE TABLE IF NOT EXISTS supervisors (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name              TEXT NOT NULL,
     base_instruction  TEXT NOT NULL,
-    available_actions  JSONB NOT NULL DEFAULT '[]'::jsonb,   -- allowed tool names
-    default_wake_minutes  INTEGER NOT NULL DEFAULT 60,        -- default sleep cadence
-    wake_aggressiveness   TEXT NOT NULL DEFAULT 'balanced',   -- passive | balanced | aggressive
-    model_config       JSONB NOT NULL DEFAULT '{{}}'::jsonb,  -- optional model overrides
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+    model_config      JSONB NOT NULL DEFAULT '{}'::jsonb,   -- {provider, model, temperature, ...}
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()    -- [ops]
 );
 
--- --- Runs (one per order = one Temporal workflow) -----------------------
-CREATE TABLE IF NOT EXISTS {schema}.runs (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    supervisor_id     UUID NOT NULL REFERENCES {schema}.supervisors(id),
-    order_id          TEXT NOT NULL,
-    workflow_id       TEXT NOT NULL UNIQUE,                  -- Temporal workflow id
-    status            TEXT NOT NULL DEFAULT 'starting',      -- starting|running|sleeping|paused|completed|terminated
-    sleep_state       TEXT NOT NULL DEFAULT 'awake',         -- awake|sleeping
-    next_wake_at      TIMESTAMPTZ,
-    order_context     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    run_instructions  JSONB NOT NULL DEFAULT '[]'::jsonb,    -- extra per-run instructions
-    memory_summary    TEXT NOT NULL DEFAULT '',              -- compact rolling summary
-    wakeup_guidance   TEXT NOT NULL DEFAULT '',              -- agent-authored classifier hints
-    final_output      JSONB,                                 -- {{summary, actions, learnings, feedback}}
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at      TIMESTAMPTZ
+-- --- Runs -----------------------------------------------------------------
+-- One row per supervised order == one long-running Temporal workflow.
+CREATE TABLE IF NOT EXISTS runs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id        TEXT NOT NULL,
+    supervisor_id   UUID NOT NULL REFERENCES supervisors(id),
+    status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'sleeping', 'completed', 'terminated')),
+    memory_summary  TEXT NOT NULL DEFAULT '',
+
+    workflow_id     TEXT UNIQUE,     -- [ops] Temporal workflow id, set on start; lets the API signal the run
+    next_wake_at    TIMESTAMPTZ,     -- [ops] when the workflow's scheduled wake-up fires (for UI display)
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),   -- [ops]
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()    -- [ops]
 );
 
-CREATE INDEX IF NOT EXISTS runs_status_idx ON {schema}.runs(status);
-CREATE INDEX IF NOT EXISTS runs_order_idx  ON {schema}.runs(order_id);
+CREATE INDEX IF NOT EXISTS runs_status_idx   ON runs (status);
+CREATE INDEX IF NOT EXISTS runs_order_id_idx ON runs (order_id);
 
--- --- Single activity log ------------------------------------------------
--- Stores everything: incoming events, wake/sleep decisions, agent actions,
--- agent reasoning, manual instructions, and final outputs.
-CREATE TABLE IF NOT EXISTS {schema}.activities (
+-- --- Activity log -------------------------------------------------------
+-- The single append-only log of everything that happens on a run: events in,
+-- wake/sleep decisions, agent actions, manual instructions, final output.
+CREATE TABLE IF NOT EXISTS activity_log (
     id          BIGSERIAL PRIMARY KEY,
-    run_id      UUID NOT NULL REFERENCES {schema}.runs(id) ON DELETE CASCADE,
-    kind        TEXT NOT NULL,   -- event | wake_decision | sleep_decision |
-                                 -- agent_action | agent_reasoning | instruction | final_output | system
-    title       TEXT NOT NULL,
-    payload     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    important    BOOLEAN NOT NULL DEFAULT false,   -- kept in compact memory
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    run_id      UUID NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    type        TEXT NOT NULL
+                    CHECK (type IN (
+                        'incoming_event',
+                        'wake_decision',
+                        'agent_action',
+                        'manual_instruction',
+                        'final_output'
+                    )),
+    payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()    -- [ops] timeline ordering
 );
 
-CREATE INDEX IF NOT EXISTS activities_run_idx  ON {schema}.activities(run_id, id);
-CREATE INDEX IF NOT EXISTS activities_kind_idx ON {schema}.activities(run_id, kind);
+CREATE INDEX IF NOT EXISTS activity_log_run_id_idx ON activity_log (run_id, id);
+CREATE INDEX IF NOT EXISTS activity_log_type_idx   ON activity_log (run_id, type);
+
+-- --- keep runs.updated_at fresh ---------------------------------------- [ops]
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS runs_set_updated_at ON runs;
+CREATE TRIGGER runs_set_updated_at
+    BEFORE UPDATE ON runs
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();

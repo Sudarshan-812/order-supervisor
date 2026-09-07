@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # --- Persistence ---
     database_url: str = "postgresql://user:password@localhost:5432/postgres"
-    db_schema: str = "order_supervisor"
+    db_schema: str = "public"
 
     # --- Temporal ---
     temporal_host: str = "localhost:7233"

@@ -16,7 +16,7 @@ sleep, and when to wake up again.
 | Frontend         | Next.js (App Router) + Tailwind CSS     |
 | Backend          | Python + FastAPI                        |
 | Orchestration    | Temporal Python SDK (`temporalio`)      |
-| Persistence      | PostgreSQL (Supabase), isolated schema  |
+| Persistence      | PostgreSQL (Neon free tier)             |
 | LLM              | Google Gemini (`google-genai`), mockable |
 
 ## Layout
@@ -43,7 +43,7 @@ order-supervisor/
 │   │       ├── memory.py        context compaction
 │   │       ├── prompts.py       prompt templates
 │   │       └── llm.py           Gemini wrapper + mock
-│   ├── schema.sql              order_supervisor schema DDL
+│   ├── schema.sql              3-table DDL (run in any Postgres)
 │   ├── requirements.txt
 │   └── tests/
 ├── frontend/                   Next.js UI (runs, supervisors, run detail)
@@ -75,9 +75,14 @@ pip install -r requirements.txt
 cp .env.example .env               # then fill in values
 ```
 
-`.env` already points at the shared Supabase database with
-`DB_SCHEMA=order_supervisor`, so tables are created in an isolated schema on
-first boot. Leave `GEMINI_API_KEY` blank to run in deterministic **mock mode**.
+Set `DATABASE_URL` to your Neon **direct** connection string (see
+`.env.example`), then create the tables:
+
+```bash
+psql "$DATABASE_URL" -f schema.sql
+```
+
+Leave `GEMINI_API_KEY` blank to run in deterministic **mock mode**.
 
 Run (three terminals):
 
