@@ -1,13 +1,12 @@
-"""Domain enums + Pydantic models shared by the API, the Temporal workflow, and
-the agent layer.
+"""Domain enums and Pydantic models shared by the API, the Temporal workflow,
+and the agent layer.
 
 Three groups:
-  * DB / API models        - mutable, mirror the 3 tables (supervisors, runs,
-                             activity_log) and the HTTP surface.
-  * Signal payloads        - what the API sends into a live workflow.
-  * Frozen LLM contracts   - `ClassifierDecision`, `AgentDecision`, `FinalOutput`.
-                             These are `frozen=True`: once parsed from model
-                             output they never mutate.
+  * DB / API models: mirror the 3 tables (supervisors, runs, activity_log) and
+    the HTTP surface.
+  * Signal payloads: what the API sends into a live workflow.
+  * Frozen LLM contracts: ClassifierDecision, AgentDecision, FinalOutput. These
+    are frozen=True; once parsed from model output they never mutate.
 
 Everything here is JSON-serialisable so it can cross the Temporal boundary.
 """
@@ -20,9 +19,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# --------------------------------------------------------------------------- #
 # Enums (values match the CHECK constraints in schema.sql)
-# --------------------------------------------------------------------------- #
+
 class RunStatus(str, Enum):
     ACTIVE = "active"
     SLEEPING = "sleeping"
@@ -38,24 +36,11 @@ class ActivityType(str, Enum):
     FINAL_OUTPUT = "final_output"
 
 
-# Order lifecycle events the generator / control panel can emit.
-EVENT_TYPES = [
-    "order_created",
-    "payment_confirmed",
-    "payment_failed",
-    "shipment_created",
-    "shipment_delayed",
-    "delivered",
-    "refund_requested",
-    "customer_message_received",
-    "no_update_for_n_hours",
-]
-
-# Events that put the order into a terminal state -> workflow-owned completion.
+# Events that put the order into a terminal state (workflow-owned completion).
 TERMINAL_EVENT_TYPES = {"delivered", "order_cancelled"}
 
-# The 5 required business actions. Each is "executed" by writing an
-# activity_log row (type = agent_action). No external APIs.
+# The 5 required business actions. Each is "executed" by writing an activity_log
+# row (type = agent_action); there are no external calls.
 BUSINESS_ACTIONS = [
     "message_fulfillment_team",
     "message_payments_team",
@@ -75,19 +60,15 @@ ActionName = Literal[
 WakeAggressiveness = Literal["passive", "balanced", "aggressive"]
 
 
-# --------------------------------------------------------------------------- #
 # Supervisor templates
-# --------------------------------------------------------------------------- #
+
 class SupervisorCreate(BaseModel):
     name: str
     base_instruction: str
-    # First-class config knobs (assignment: available actions, default wake
-    # behaviour, wake aggressiveness). Persisted inside the `model_config` JSONB
-    # column together with `extra`.
-    allowed_actions: list[ActionName] = Field(default_factory=list)  # [] == all 5
+    allowed_actions: list[ActionName] = Field(default_factory=list)  # [] means all 5
     default_wake_minutes: int = 60
     wake_aggressiveness: WakeAggressiveness = "balanced"
-    # Free-form escape hatch (model name, temperature, ...). Named `extra` here
+    # Free-form escape hatch (model name, temperature, ...). Called `extra`
     # because `model_config` is reserved by pydantic v2.
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -104,30 +85,17 @@ class Supervisor(BaseModel):
     id: str
     name: str
     base_instruction: str
-    model_settings: dict[str, Any]  # raw `model_config` JSONB
+    model_settings: dict[str, Any]  # the raw `model_config` JSONB column
     created_at: datetime
 
-    @property
-    def allowed_actions(self) -> list[str]:
-        return list(self.model_settings.get("allowed_actions", []))
 
-    @property
-    def default_wake_minutes(self) -> int:
-        return int(self.model_settings.get("default_wake_minutes", 60))
-
-    @property
-    def wake_aggressiveness(self) -> str:
-        return str(self.model_settings.get("wake_aggressiveness", "balanced"))
-
-
-# --------------------------------------------------------------------------- #
 # Runs
-# --------------------------------------------------------------------------- #
+
 class RunCreate(BaseModel):
     supervisor_id: str
     order_id: str
-    # Not persisted as columns - passed to the workflow as start input and
-    # written to activity_log so the agent has them from wake #1.
+    # Not stored as columns: passed to the workflow as start input and written
+    # to activity_log so the agent has them from the first wake.
     order_context: dict[str, Any] = Field(default_factory=dict)
     run_instructions: list[str] = Field(default_factory=list)
 
@@ -156,14 +124,13 @@ class RunDetail(BaseModel):
     run: Run
     timeline: list[ActivityLogRow]
     # Best-effort live snapshot from the workflow's `status` query (queued
-    # events, standing instructions, next wake). None if the workflow can't be
-    # reached (completed, or worker down).
+    # events, standing instructions, next wake, paused, ...). None when the
+    # workflow can't be reached (completed, or worker down).
     live: dict[str, Any] | None = None
 
 
-# --------------------------------------------------------------------------- #
-# Signal payloads (API -> workflow)
-# --------------------------------------------------------------------------- #
+# Signal payloads (API to workflow)
+
 class IncomingEvent(BaseModel):
     """An order lifecycle event delivered into the workflow as a signal."""
 
@@ -176,9 +143,8 @@ class ManualInstruction(BaseModel):
     text: str
 
 
-# --------------------------------------------------------------------------- #
 # Frozen LLM contracts
-# --------------------------------------------------------------------------- #
+
 class ClassifierDecision(BaseModel):
     """Output of the lightweight wake-up classifier."""
 
@@ -207,8 +173,8 @@ class AgentDecision(BaseModel):
     actions: list[AgentAction] = Field(default_factory=list)
     new_memory_summary: str
     next_sleep_seconds: int = Field(ge=1)
-    # Optional: agent-authored hints the lightweight classifier uses on future
-    # events ("wake immediately on refund_requested", ...). "" == keep current.
+    # Agent-authored hints the classifier uses on future events. "" keeps the
+    # guidance already in workflow state.
     wakeup_guidance: str = ""
     recommend_completion: bool = False
     completion_reason: str | None = None

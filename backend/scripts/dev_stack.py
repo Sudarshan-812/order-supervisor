@@ -1,16 +1,16 @@
-"""One-process dev stack: in-process Temporal server + worker + FastAPI on :8000.
+"""One-process dev stack: in-process Temporal server, worker, and FastAPI on :8000.
 
 Use this when you don't want to install the Temporal CLI. It downloads a small
-Temporal test-server binary on first run (cached afterwards).
+Temporal test-server binary on first run and caches it.
 
     cd backend
-    .venv/Scripts/python.exe -m scripts.dev_stack        # or: python scripts/dev_stack.py
+    python -m scripts.dev_stack
 
-Then the API is at http://localhost:8000 (docs at /docs) and the Next.js UI
-(`npm run dev` in ../frontend) talks to it unchanged.
+The API is then at http://localhost:8000 (docs at /docs) and the Next.js UI
+(npm run dev in ../frontend) talks to it unchanged.
 
-For the real setup (persistent Temporal + its web UI at :8233) install the CLI
-and run the three processes separately - see README "Setup".
+For the real setup (persistent Temporal plus its web UI on :8233) install the
+CLI and run the three processes separately; see the README.
 """
 from __future__ import annotations
 
@@ -49,10 +49,10 @@ async def main() -> None:
     async with env, worker:
         print(
             f"\n  dev stack up\n"
-            f"  API   : http://127.0.0.1:{settings.api_port}  (docs: /docs)\n"
-            f"  LLM   : {'gemini' if settings.llm_enabled else 'mock (no GEMINI_API_KEY)'}\n"
-            f"  DB    : {settings.database_url.split('@')[-1].split('/')[0]}\n"
-            f"  Ctrl-C to stop\n"
+            f"  API  http://127.0.0.1:{settings.api_port}  (docs at /docs)\n"
+            f"  LLM  {'gemini' if settings.llm_enabled else 'mock (no GEMINI_API_KEY)'}\n"
+            f"  DB   {settings.database_url.split('@')[-1].split('/')[0]}\n"
+            f"  press Ctrl-C to stop\n"
         )
         await server.serve()
 

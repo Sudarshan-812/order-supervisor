@@ -1,30 +1,24 @@
--- ===========================================================================
--- Order Supervisor - Supabase schema
--- ---------------------------------------------------------------------------
--- Run this as-is in the Supabase SQL editor (or `psql`). It creates the three
--- tables the POC needs in the `public` schema.
+-- Order Supervisor schema.
 --
--- Enum-like columns are plain TEXT + CHECK so the POC stays migration-free.
--- A few operational columns beyond the base spec are marked [ops] and can be
--- dropped if unused.
--- ===========================================================================
+-- Run this as is in any Postgres 13+ (a SQL editor or psql). It creates the
+-- three tables in the public schema. Enum-like columns are plain TEXT with a
+-- CHECK so the POC stays migration free. The backend also runs this file on
+-- startup; every statement is idempotent.
 
--- gen_random_uuid() lives in pgcrypto; Supabase enables it by default, this is
--- just belt-and-braces for a bare Postgres.
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- for gen_random_uuid() on a bare Postgres
 
--- --- Supervisor templates ------------------------------------------------
--- Reusable "what kind of supervisor is this" definitions. A run points at one.
+
+-- Supervisor templates. A run points at one.
 CREATE TABLE IF NOT EXISTS supervisors (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name              TEXT NOT NULL,
     base_instruction  TEXT NOT NULL,
-    model_config      JSONB NOT NULL DEFAULT '{}'::jsonb,   -- {provider, model, temperature, ...}
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()    -- [ops]
+    model_config      JSONB NOT NULL DEFAULT '{}'::jsonb,  -- allowed_actions, default_wake_minutes, wake_aggressiveness, model overrides
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- --- Runs -----------------------------------------------------------------
--- One row per supervised order == one long-running Temporal workflow.
+
+-- One row per supervised order, which is one long-running Temporal workflow.
 CREATE TABLE IF NOT EXISTS runs (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id        TEXT NOT NULL,
@@ -32,38 +26,37 @@ CREATE TABLE IF NOT EXISTS runs (
     status          TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active', 'sleeping', 'completed', 'terminated')),
     memory_summary  TEXT NOT NULL DEFAULT '',
-
-    workflow_id     TEXT UNIQUE,     -- [ops] Temporal workflow id, set on start; lets the API signal the run
-    next_wake_at    TIMESTAMPTZ,     -- [ops] when the workflow's scheduled wake-up fires (for UI display)
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),   -- [ops]
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()    -- [ops]
+    workflow_id     TEXT UNIQUE,   -- Temporal workflow id, set on start; lets the API signal the run
+    next_wake_at    TIMESTAMPTZ,   -- when the scheduled wake fires (for the UI)
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS runs_status_idx   ON runs (status);
 CREATE INDEX IF NOT EXISTS runs_order_id_idx ON runs (order_id);
 
--- --- Activity log -------------------------------------------------------
--- The single append-only log of everything that happens on a run: events in,
--- wake/sleep decisions, agent actions, manual instructions, final output.
+
+-- One append-only log per run: incoming events, wake/sleep decisions, agent
+-- actions, manual instructions, and the final output.
 CREATE TABLE IF NOT EXISTS activity_log (
     id          BIGSERIAL PRIMARY KEY,
     run_id      UUID NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    type        TEXT NOT NULL
-                    CHECK (type IN (
-                        'incoming_event',
-                        'wake_decision',
-                        'agent_action',
-                        'manual_instruction',
-                        'final_output'
-                    )),
+    type        TEXT NOT NULL CHECK (type IN (
+                    'incoming_event',
+                    'wake_decision',
+                    'agent_action',
+                    'manual_instruction',
+                    'final_output'
+                )),
     payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()    -- [ops] timeline ordering
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS activity_log_run_id_idx ON activity_log (run_id, id);
 CREATE INDEX IF NOT EXISTS activity_log_type_idx   ON activity_log (run_id, type);
 
--- --- keep runs.updated_at fresh ---------------------------------------- [ops]
+
+-- Keep runs.updated_at current on every UPDATE.
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
 BEGIN
     NEW.updated_at = now();

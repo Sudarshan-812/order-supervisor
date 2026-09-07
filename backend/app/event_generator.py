@@ -1,12 +1,12 @@
 """Event generator / simulator.
 
 Two ways to use it:
-  * CLI:   python -m app.event_generator <run_id> --scenario payment_trouble
-  * API:   POST /api/runs/{run_id}/simulate?scenario=payment_trouble
-           (app.api.routes imports SCENARIOS from here)
+  * CLI:  python -m app.event_generator <run_id> --scenario payment_trouble
+  * API:  POST /api/runs/{run_id}/simulate?scenario=payment_trouble
+          (app.api.routes imports SCENARIOS from here)
 
-The CLI posts each event to POST /api/runs/{run_id}/events (which forwards it as
-an `incoming_event` signal), so it exercises the real path end to end.
+The CLI posts each event to POST /api/runs/{run_id}/events, which forwards it as
+an incoming_event signal, so it exercises the real path end to end.
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ async def send_scenario(
                 await asyncio.sleep(delay_s)
             body = {"payload": {}, **ev}
             resp = await client.post(f"/api/runs/{run_id}/events", json=body)
-            print(f"  -> {ev['type']:<26} {resp.status_code} {resp.text.strip()[:80]}")
+            print(f"  {ev['type']:<26} {resp.status_code} {resp.text.strip()[:80]}")
             if resp.status_code == 409:
                 print("  run is no longer accepting events; stopping.")
                 return

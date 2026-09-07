@@ -38,11 +38,11 @@ In **Start a run**:
 On the detail page you should immediately see (it may take ~1s, the page polls
 every 3s):
 - **status** `sleeping`, a **next wake** ~1h out
-- **agent wakes** `1` — the start wake
-- **agent wake-up guidance** — a line the agent authored for the classifier
-- **Timeline**: `run_created` → `agent wake (start) → sleep …s`
+- **agent wakes** `1` (the start wake)
+- **agent wake-up guidance**: a line the agent authored for the classifier
+- **Timeline**: `run_created` → `agent wake (start) → sleep ...s`
 
-## 3. Send events — watch classify → wake → act → sleep
+## 3. Send events, watch classify then wake then act then sleep
 
 Use the **Event generator** panel → scenario **`payment_trouble`** → **Run
 scenario**. It fires, 2s apart:
@@ -60,7 +60,7 @@ Watch the timeline:
   actions / key learnings / feedback.
 
 (Manual single events: the **Inject event** panel sends one event with a JSON
-payload — try a custom type like `warehouse_fire` to see the unknown-event
+payload. Try a custom type like `warehouse_fire` to see the unknown-event
 escalation path.)
 
 ## 4. Add an instruction to a live run
@@ -76,15 +76,15 @@ the agent act on `shipment_delayed` per the new instruction.
 ## 5. Pause / resume
 
 On a live run, **Lifecycle → Pause**. The header shows a **paused** badge and
-`paused = true`. Send an event — it shows in the timeline and **queued events**
+`paused = true`. Send an event: it shows in the timeline and **queued events**
 increments, but **agent wakes** does *not*. **Resume** → the agent wakes once and
 drains the queue.
 
 ## 6. Interrupt vs terminate
 
-- **Interrupt (wake now)** — forces an immediate agent wake to re-assess; the run
+- **Interrupt (wake now)**: forces an immediate agent wake to re-assess; the run
   stays alive (status returns to `sleeping` afterwards).
-- **Terminate** — confirm the dialog; the workflow runs the final-output step and
+- **Terminate**: confirm the dialog; the workflow runs the final-output step and
   exits with status **`terminated`**; the **Final output** card renders.
 
 ## 7. Persistence check (optional)

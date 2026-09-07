@@ -140,7 +140,7 @@ function StartRunPanel({ onStarted }: { onStarted: () => void }) {
           onChange={(e) => setSupervisorId(e.target.value)}
           required
         >
-          {supervisors.length === 0 && <option value="">- none - create one first</option>}
+          {supervisors.length === 0 && <option value="">no templates yet, create one first</option>}
           {supervisors.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}

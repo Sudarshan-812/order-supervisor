@@ -1,15 +1,14 @@
 """HTTP API surface.
 
-Wiring:
-    supervisors        -> DB only
-    POST /runs         -> DB row + start ONE Temporal workflow for the order
-    GET  /runs[/{id}]  -> DB row(s) + activity_log timeline + live status query
-    /events            -> `incoming_event`     signal
-    /instructions      -> `manual_instruction` signal
-    /interrupt         -> `interrupt`  signal (force an immediate wake, non-terminal)
-    /pause /resume     -> `pause` / `resume` signals
-    /terminate         -> `terminate` signal  (workflow-owned completion)
-    /simulate          -> fire a canned event scenario into the run (event generator)
+    supervisors        DB only
+    POST /runs         create a run row and start ONE workflow for the order
+    GET  /runs[/{id}]  run row(s) plus activity_log timeline plus live status query
+    /events            incoming_event signal
+    /instructions      manual_instruction signal
+    /interrupt         interrupt signal (force an immediate wake, non-terminal)
+    /pause, /resume    pause / resume signals
+    /terminate         terminate signal (workflow-owned completion)
+    /simulate          fire a canned event scenario into the run (event generator)
 """
 from __future__ import annotations
 
@@ -37,9 +36,8 @@ from app.temporal.workflows import OrderSupervisorInput
 router = APIRouter(prefix="/api")
 
 
-# --------------------------------------------------------------------------- #
-# Row -> model mappers
-# --------------------------------------------------------------------------- #
+# Row to model mappers
+
 def _supervisor(row: Any) -> Supervisor:
     return Supervisor(
         id=str(row["id"]),
@@ -77,7 +75,7 @@ def _activity(row: Any) -> ActivityLogRow:
 async def _load_run_or_404(run_id: str) -> Any:
     try:
         row = await db.fetch_run(run_id)
-    except Exception as exc:  # bad uuid etc.
+    except Exception as exc:  # malformed uuid, etc.
         raise HTTPException(400, f"bad run id: {exc}") from exc
     if row is None:
         raise HTTPException(404, "run not found")
@@ -87,21 +85,18 @@ async def _load_run_or_404(run_id: str) -> Any:
 async def _load_supervisor_or_404(supervisor_id: str) -> Any:
     try:
         row = await db.fetch_supervisor(supervisor_id)
-    except Exception as exc:  # bad uuid etc.
+    except Exception as exc:
         raise HTTPException(400, f"bad supervisor id: {exc}") from exc
     if row is None:
         raise HTTPException(404, "supervisor not found")
     return row
 
 
-# --------------------------------------------------------------------------- #
 # Supervisor templates
-# --------------------------------------------------------------------------- #
+
 @router.post("/supervisors", response_model=Supervisor, status_code=201)
 async def create_supervisor(body: SupervisorCreate) -> Supervisor:
-    row = await db.create_supervisor(
-        body.name, body.base_instruction, body.to_model_config()
-    )
+    row = await db.create_supervisor(body.name, body.base_instruction, body.to_model_config())
     return _supervisor(row)
 
 
@@ -115,13 +110,12 @@ async def get_supervisor(supervisor_id: str) -> Supervisor:
     return _supervisor(await _load_supervisor_or_404(supervisor_id))
 
 
-# --------------------------------------------------------------------------- #
 # Runs
-# --------------------------------------------------------------------------- #
+
 @router.post("/runs", response_model=Run, status_code=201)
 async def create_run(body: RunCreate) -> Run:
     """Create a run row and start exactly one Temporal workflow for the order
-    (id = ``order-supervisor::{order_id}``, reject-duplicate)."""
+    (id order-supervisor::{order_id}, reject-duplicate)."""
     sup = await _load_supervisor_or_404(body.supervisor_id)
     cfg = sup["model_config"] or {}
     run_id = str(uuid.uuid4())
@@ -148,8 +142,7 @@ async def create_run(body: RunCreate) -> Run:
         raise HTTPException(502, f"could not start workflow: {exc}") from exc
 
     await db.patch_run(run_id, workflow_id=wf_id)
-    run_row = await db.fetch_run(run_id)
-    return _run(run_row)
+    return _run(await db.fetch_run(run_id))
 
 
 @router.get("/runs", response_model=list[Run])
@@ -161,9 +154,7 @@ async def list_runs(status: str | None = None) -> list[Run]:
 async def get_run(run_id: str) -> RunDetail:
     row = await _load_run_or_404(run_id)
     timeline = [_activity(a) for a in await db.fetch_activities(run_id)]
-    live = None
-    if row["workflow_id"]:
-        live = await tc.query_status(row["workflow_id"])
+    live = await tc.query_status(row["workflow_id"]) if row["workflow_id"] else None
     return RunDetail(run=_run(row), timeline=timeline, live=live)
 
 
@@ -174,22 +165,20 @@ async def get_run_activities(run_id: str, type: str | None = None) -> list[Activ
     return [_activity(a) for a in await db.fetch_activities(run_id, types=types)]
 
 
-# --------------------------------------------------------------------------- #
 # Signals into a live run
-# --------------------------------------------------------------------------- #
-async def _signal_or_409(run_id: str, coro_factory) -> None:
+
+async def _signal_or_409(run_id: str, send) -> None:
     row = await _load_run_or_404(run_id)
     if not row["workflow_id"]:
         raise HTTPException(409, "run has no workflow (start failed?)")
     try:
-        await coro_factory(row["workflow_id"])
-    except Exception as exc:  # workflow closed / worker down / not found
+        await send(row["workflow_id"])
+    except Exception as exc:  # workflow closed, worker down, not found
         raise HTTPException(409, f"could not signal workflow: {exc}") from exc
 
 
 @router.post("/runs/{run_id}/events", status_code=202)
 async def inject_event(run_id: str, event: IncomingEvent) -> dict:
-    """Deliver an order event into the workflow (`incoming_event` signal)."""
     payload = event.model_dump(mode="json")
     await _signal_or_409(run_id, lambda wf: tc.signal_incoming_event(wf, payload))
     return {"ok": True, "delivered": event.type}
@@ -197,7 +186,6 @@ async def inject_event(run_id: str, event: IncomingEvent) -> dict:
 
 @router.post("/runs/{run_id}/instructions", status_code=202)
 async def add_instruction(run_id: str, body: ManualInstruction) -> dict:
-    """Append a run-specific instruction (`manual_instruction` signal)."""
     await _signal_or_409(run_id, lambda wf: tc.signal_manual_instruction(wf, body.text))
     return {"ok": True}
 
@@ -225,31 +213,33 @@ async def resume_run(run_id: str) -> dict:
 
 @router.post("/runs/{run_id}/terminate", status_code=202)
 async def terminate_run(run_id: str, reason: str = "manual termination") -> dict:
-    """Request workflow-owned completion (`terminate` signal): the workflow runs
-    the agent's final-output step, then exits with status 'terminated'."""
+    """Workflow-owned completion: the workflow runs the agent's final-output
+    step, then exits with status 'terminated'."""
     await _signal_or_409(run_id, lambda wf: tc.signal_terminate(wf, reason))
     return {"ok": True}
 
 
-# --------------------------------------------------------------------------- #
-# Event generator - fire a canned scenario of events into a run
-# --------------------------------------------------------------------------- #
+# Event generator: fire a canned scenario of events into a run
+
 async def _play_scenario(workflow_id: str, events: list[dict], delay_s: float) -> None:
     for i, ev in enumerate(events):
         if i:
             await asyncio.sleep(delay_s)
         try:
             await tc.signal_incoming_event(workflow_id, {"payload": {}, **ev})
-        except Exception:  # run may have completed mid-scenario - stop quietly
+        except Exception:  # run may have completed mid-scenario; stop quietly
             return
 
 
 @router.post("/runs/{run_id}/simulate", status_code=202)
 async def simulate(
-    run_id: str, background: BackgroundTasks, scenario: str = "happy_path", delay_s: float = 2.0
+    run_id: str,
+    background: BackgroundTasks,
+    scenario: str = "happy_path",
+    delay_s: float = 2.0,
 ) -> dict:
     """Event generator: replay a named scenario of order events into the run,
-    `delay_s` apart, so you can watch the agent wake / act / sleep."""
+    `delay_s` apart, so you can watch the agent wake, act, and sleep."""
     if scenario not in SCENARIOS:
         raise HTTPException(422, f"unknown scenario; choose from {sorted(SCENARIOS)}")
     row = await _load_run_or_404(run_id)
@@ -262,5 +252,5 @@ async def simulate(
 
 @router.get("/scenarios", response_model=dict)
 async def list_scenarios() -> dict:
-    """Names + event sequences the /simulate endpoint and CLI generator support."""
+    """Scenario names and their event sequences."""
     return {name: [e["type"] for e in evs] for name, evs in SCENARIOS.items()}

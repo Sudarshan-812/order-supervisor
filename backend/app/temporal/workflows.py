@@ -1,37 +1,32 @@
-"""OrderSupervisorWorkflow - one long-running workflow per order.
+"""OrderSupervisorWorkflow: one long-running workflow per order.
 
-Triggers for agent inference
-----------------------------
-1. workflow start            -> run the agent once ("start")
-2. incoming_event signal     -> classifier activity decides wake-now vs stay-asleep
-3. manual_instruction signal -> always wakes the agent
-4. interrupt signal          -> force an immediate wake to re-assess
-5. resume signal             -> wake after a pause
-6. scheduled wake-up         -> wait_condition timeout fires -> run the agent
+Three triggers for agent inference:
+  1. workflow start (the agent runs once with reason "start")
+  2. an incoming_event signal the classifier deems important
+  3. the scheduled wake-up timer
 
-Main loop (no tight polling)
-----------------------------
-A single `workflow.wait_condition(..., timeout=<until next scheduled wake>)`.
+The main loop is a single ``workflow.wait_condition(..., timeout=next_wake - now)``.
 It returns early when the agent should run or a lifecycle flag flips; otherwise
-it times out and we do a scheduled wake. While paused, the loop parks on a
-second wait_condition and does not run the agent (events still queue).
+it times out and does a scheduled wake. No tight polling. Each agent run is a
+Temporal activity, so all LLM and DB side effects stay outside the deterministic
+workflow. While paused the loop parks on a second wait_condition and never runs
+the agent (events still queue).
 
-Signals & lifecycle
--------------------
-  incoming_event(event)      order lifecycle event -> classify -> maybe wake
-  manual_instruction(text)   run-specific instruction -> wake
-  pause()  / resume()        halt / restart agent inference
-  interrupt(reason)          force an immediate wake now (NON-terminal)
-  terminate(reason)          workflow-owned completion -> final output -> exit
+Signals:
+  incoming_event(event)       log, classify, maybe wake; terminal events complete
+  manual_instruction(text)    added to run context, wakes the agent
+  pause() / resume()          halt / restart agent inference
+  interrupt(reason)           force an immediate wake to re-assess (non-terminal)
+  terminate(reason)           workflow-owned completion, then exit
 
-Completion is WORKFLOW-owned, never agent-owned:
-  * terminal order event (models.TERMINAL_EVENT_TYPES)   -> status "completed"
-  * terminate signal (manual)                            -> status "terminated"
-  * MAX_WORKFLOW_AGE_HOURS exceeded                       -> status "completed"
-The agent may only *recommend* completion.
+Completion is workflow-owned, never agent-owned:
+  * a terminal order event (models.TERMINAL_EVENT_TYPES) gives status "completed"
+  * the terminate signal gives status "terminated"
+  * exceeding MAX_WORKFLOW_AGE_HOURS gives status "completed"
+The agent may only recommend completion.
 
-Long histories -> `continue_as_new`, carrying the compact memory summary and the
-agent-authored wake-up guidance.
+Long histories trigger continue_as_new, carrying the compact memory summary and
+the agent-authored wake-up guidance.
 """
 from __future__ import annotations
 
@@ -94,7 +89,6 @@ class OrderSupervisorWorkflow:
         self._terminate_requested = False
         self._terminate_reason: str | None = None
         self._end_status = "completed"
-        self._done = False
         self._status = "active"
         self._memory_summary = ""
         self._wakeup_guidance = ""
@@ -102,7 +96,6 @@ class OrderSupervisorWorkflow:
         self._next_wake_dt = None  # type: ignore[assignment]
         self._processed_wakes = 0
 
-    # ------------------------------ run -------------------------------- #
     @workflow.run
     async def run(self, inp: OrderSupervisorInput) -> FinalOutput:
         self._inp = inp
@@ -165,12 +158,13 @@ class OrderSupervisorWorkflow:
         final = await self._finalize(self._terminate_reason or "completed")
         return FinalOutput.model_validate(final)
 
-    # ---------------------------- signals ----------------------------- #
+    # Signals
+
     @workflow.signal
     async def incoming_event(self, event: dict) -> None:
-        """Order lifecycle event: log it, classify it, maybe wake the agent.
-        A terminal event moves the workflow towards completion. While paused the
-        event is logged + classified but the agent is not woken (it queues)."""
+        """Order lifecycle event: log it, classify it, maybe wake the agent. A
+        terminal event moves the workflow towards completion. While paused the
+        event is logged and classified but the agent is not woken; it queues."""
         assert self._inp is not None
         self._pending_events.append(event)
         await self._log("incoming_event", event)
@@ -198,7 +192,7 @@ class OrderSupervisorWorkflow:
 
     @workflow.signal
     async def manual_instruction(self, text: str) -> None:
-        """Operator instruction added to a live run -> part of run context."""
+        """Operator instruction added to a live run; becomes part of run context."""
         assert self._inp is not None
         self._instructions.append(text)
         await self._log("manual_instruction", {"text": text})
@@ -219,7 +213,7 @@ class OrderSupervisorWorkflow:
 
     @workflow.signal
     async def interrupt(self, reason: str = "operator interrupt") -> None:
-        """Force an immediate agent wake to re-assess. NON-terminal."""
+        """Force an immediate agent wake to re-assess. Non-terminal."""
         self._paused = False
         self._agent_should_run = True
         self._wake_reason = "interrupt"
@@ -232,7 +226,8 @@ class OrderSupervisorWorkflow:
         self._terminate_reason = reason or "manual termination"
         self._end_status = "terminated"
 
-    # ---------------------------- queries ---------------------------- #
+    # Query
+
     @workflow.query
     def status(self) -> dict:
         return {
@@ -248,7 +243,8 @@ class OrderSupervisorWorkflow:
             "terminating": self._terminate_requested,
         }
 
-    # --------------------------- internals -------------------------- #
+    # Internals
+
     async def _log(self, type_: str, payload: dict) -> None:
         assert self._inp is not None
         await workflow.execute_activity(
@@ -320,7 +316,6 @@ class OrderSupervisorWorkflow:
     async def _finalize(self, reason: str) -> dict:
         assert self._inp is not None
         inp = self._inp
-        self._done = True
         self._status = self._end_status
 
         final = await workflow.execute_activity(

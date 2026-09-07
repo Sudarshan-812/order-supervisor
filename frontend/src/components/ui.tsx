@@ -3,9 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RunStatus } from "@/lib/api";
 
-// --------------------------------------------------------------------------- //
-// Polling hook - re-runs `fn` every `ms` and on demand.
-// --------------------------------------------------------------------------- //
+// Polling hook: re-runs `fn` every `ms` and on demand.
 export function usePoll<T>(fn: () => Promise<T>, ms = 3000) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -34,9 +32,7 @@ export function usePoll<T>(fn: () => Promise<T>, ms = 3000) {
   return { data, error, loading, refresh };
 }
 
-// --------------------------------------------------------------------------- //
-// Bits
-// --------------------------------------------------------------------------- //
+// Small shared bits.
 export function Button({
   className = "",
   ...props
@@ -97,9 +93,7 @@ export function StatusBadge({ status }: { status: string }) {
   );
 }
 
-// --------------------------------------------------------------------------- //
-// Time helpers
-// --------------------------------------------------------------------------- //
+// Time helpers.
 export function fmtTime(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso);

@@ -1,4 +1,4 @@
-"""Central configuration, loaded from environment / .env."""
+"""Central configuration, loaded from the environment and .env."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -9,25 +9,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # --- Persistence ---
+    # Persistence
     database_url: str = "postgresql://user:password@localhost:5432/postgres"
-    db_schema: str = "public"
 
-    # --- Temporal ---
+    # Temporal
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "order-supervisor"
 
-    # --- LLM ---
+    # LLM
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
 
-    # --- Lifecycle guard rails ---
+    # Lifecycle guard rails
     max_workflow_age_hours: int = 168
     default_wake_interval_minutes: int = 60
 
-    # --- API ---
-    api_host: str = "0.0.0.0"
+    # API
     api_port: int = 8000
     frontend_origin: str = "http://localhost:3000"
 

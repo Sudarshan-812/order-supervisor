@@ -1,6 +1,6 @@
-"""Context compaction - deliberately simple.
+"""Context compaction, deliberately simple.
 
-  * The rolling summary lives on `runs.memory_summary` (a single text blob the
+  * The rolling summary lives on runs.memory_summary (a single text blob the
     agent rewrites every wake).
   * The agent prompt also gets the last RECENT_WINDOW activity_log rows verbatim.
   * When the log grows past COMPACT_TRIGGER rows, the tail (everything older
@@ -14,8 +14,8 @@ from typing import Any
 from app import db
 from app.agent import llm
 
-RECENT_WINDOW = 30          # activity_log rows kept verbatim in the agent prompt
-COMPACT_TRIGGER = 80        # total rows before we summarise the tail
+RECENT_WINDOW = 30   # activity_log rows kept verbatim in the agent prompt
+COMPACT_TRIGGER = 80  # total rows before we summarise the tail
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -32,7 +32,7 @@ async def build_working_context(run_id: str) -> dict[str, Any]:
     run = await db.fetch_run(run_id)
     memory_summary = run["memory_summary"] if run else ""
     rows = await db.fetch_activities(run_id, limit=RECENT_WINDOW, newest_first=True)
-    recent = [_row_to_dict(r) for r in reversed(rows)]  # back to oldest-first
+    recent = [_row_to_dict(r) for r in reversed(rows)]  # back to oldest first
     return {"memory_summary": memory_summary, "recent_timeline": recent}
 
 

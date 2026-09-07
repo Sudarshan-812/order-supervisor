@@ -53,7 +53,7 @@ export default function RunDetailPage() {
       {error && <p className="text-sm text-red-600">Failed to load run: {error}</p>}
 
       <div className="grid gap-8 lg:grid-cols-[1.8fr_1fr]">
-        {/* -------- left: state + timeline -------- */}
+        {/* left: state + timeline */}
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 rounded border border-neutral-200 p-4 text-sm dark:border-neutral-800 sm:grid-cols-3">
             <Meta label="status" value={run?.status ?? "-"} />
@@ -132,7 +132,7 @@ export default function RunDetailPage() {
           </div>
         </div>
 
-        {/* -------- right: control panel -------- */}
+        {/* right: control panel */}
         <aside className="space-y-4">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
             Control panel
@@ -176,9 +176,7 @@ function Meta({
   );
 }
 
-// --------------------------------------------------------------------------- //
-// Timeline rendering
-// --------------------------------------------------------------------------- //
+// Timeline rendering.
 const TYPE_STYLE: Record<string, string> = {
   incoming_event: "border-l-indigo-400",
   wake_decision: "border-l-sky-400",
@@ -196,7 +194,7 @@ function TimelineItem({ row }: { row: ActivityLogRow }) {
     headline =
       p.stage === "classifier"
         ? `classifier: ${p.wake_now ? "WAKE" : "stay asleep"} (${s("importance")})`
-        : `agent wake (${s("reason")}) -> sleep ${s("next_sleep_seconds")}s`;
+        : `agent wake (${s("reason")}), then sleep ${s("next_sleep_seconds")}s`;
   else if (row.type === "agent_action") headline = `action: ${s("tool")}`;
   else if (row.type === "manual_instruction") headline = "instruction added";
   else if (row.type === "final_output") headline = "final output";
@@ -250,9 +248,7 @@ function FinalOutput({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-// --------------------------------------------------------------------------- //
-// Control cards
-// --------------------------------------------------------------------------- //
+// Control-panel cards.
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-2 rounded border border-neutral-200 p-3 dark:border-neutral-800">
@@ -501,7 +497,7 @@ function ScenarioCard({
     setMsg(null);
     try {
       const r = await simulateRun(runId, name);
-      setMsg({ kind: "ok", text: `playing: ${r.events.join(" -> ")}` });
+      setMsg({ kind: "ok", text: `playing: ${r.events.join(", ")}` });
       onDone();
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof ApiError ? `${err.status}: ${err.message}` : String(err) });
@@ -526,7 +522,7 @@ function ScenarioCard({
         ))}
       </select>
       {name && scenarios[name] && (
-        <p className="text-xs text-neutral-500">{scenarios[name].join(" -> ")}</p>
+        <p className="text-xs text-neutral-500">{scenarios[name].join(", ")}</p>
       )}
       <Button type="button" onClick={run} disabled={disabled || busy || !name}>
         {busy ? "starting..." : "Run scenario"}

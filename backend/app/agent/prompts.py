@@ -1,6 +1,6 @@
 """Prompt builders for the classifier, the main agent, and the final report.
 
-Plain string builders - easy to eyeball, easy to diff. The agent + classifier
+Plain string builders, easy to eyeball and diff. The agent and classifier
 always ask the model for a single JSON object matching a frozen pydantic schema.
 """
 from __future__ import annotations
@@ -8,9 +8,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# --------------------------------------------------------------------------- #
+
 # Classifier
-# --------------------------------------------------------------------------- #
+
 CLASSIFIER_SYSTEM = (
     "You are a lightweight event-triage policy for a long-running order "
     "supervisor. You are given ONE incoming order event. Decide whether it is "
@@ -29,9 +29,8 @@ def build_classifier_prompt(event: dict[str, Any]) -> str:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Main agent
-# --------------------------------------------------------------------------- #
+
 AGENT_SYSTEM = (
     "You are a long-running AI supervisor overseeing a SINGLE e-commerce order "
     "from creation to completion. You are woken occasionally: on start, on "
@@ -41,16 +40,16 @@ AGENT_SYSTEM = (
     "order's current state, take ONLY the actions that are actually needed, "
     "rewrite your compact memory so the next wake has what it needs, and choose "
     "how many seconds to sleep before the next scheduled wake.\n\n"
-    "You do NOT decide when the workflow ends - you may only recommend "
-    "completion (the workflow ends itself on a terminal order event or a manual "
-    "termination).\n\n"
-    "Available actions (each just posts a message / note - no external system):\n"
+    "You do NOT decide when the workflow ends. You may only recommend "
+    "completion; the workflow ends itself on a terminal order event or a manual "
+    "termination.\n\n"
+    "Available actions (each just posts a message or note, no external system):\n"
     "  message_fulfillment_team, message_payments_team, message_logistics_team,\n"
     "  message_customer, create_internal_note\n\n"
-    "You may also author 'wake-up guidance': a short line telling the lightweight "
-    "classifier which future events should wake you immediately vs wait for the "
-    "next scheduled check. Return it every time (repeat the current one if it "
-    "still holds).\n\n"
+    "You may also author 'wake-up guidance': a short line telling the classifier "
+    "which future events should wake you immediately vs wait for the next "
+    "scheduled check. Return it every time (repeat the current one if it still "
+    "holds).\n\n"
     "Respond with a single JSON object and nothing else:\n"
     "{\n"
     '  "reasoning": string,\n'
@@ -76,39 +75,34 @@ def build_agent_prompt(
     allowed_actions: list[str],
     wakeup_guidance: str = "",
 ) -> str:
-    def _block(title: str, body: str) -> str:
+    def block(title: str, body: str) -> str:
         return f"## {title}\n{body}".rstrip()
 
-    instr = "\n".join(f"- {i}" for i in run_instructions) or "(none)"
+    instr = "\n".join(f"* {i}" for i in run_instructions) or "(none)"
     timeline = (
-        json.dumps(recent_timeline, indent=2, default=str)
-        if recent_timeline
-        else "(empty)"
+        json.dumps(recent_timeline, indent=2, default=str) if recent_timeline else "(empty)"
     )
     pending = (
-        json.dumps(pending_events, indent=2, default=str)
-        if pending_events
-        else "(none)"
+        json.dumps(pending_events, indent=2, default=str) if pending_events else "(none)"
     )
     return "\n\n".join(
         [
-            _block("WAKE REASON", reason),
-            _block("BASE INSTRUCTION", base_instruction),
-            _block("RUN INSTRUCTIONS", instr),
-            _block("ORDER CONTEXT", json.dumps(order_context, indent=2, default=str)),
-            _block("COMPACT MEMORY", memory_summary or "(empty)"),
-            _block("CURRENT WAKE-UP GUIDANCE", wakeup_guidance or "(none set)"),
-            _block("RECENT TIMELINE (oldest first)", timeline),
-            _block("EVENTS SINCE LAST WAKE", pending),
-            _block("ALLOWED ACTIONS", ", ".join(allowed_actions)),
+            block("WAKE REASON", reason),
+            block("BASE INSTRUCTION", base_instruction),
+            block("RUN INSTRUCTIONS", instr),
+            block("ORDER CONTEXT", json.dumps(order_context, indent=2, default=str)),
+            block("COMPACT MEMORY", memory_summary or "(empty)"),
+            block("CURRENT WAKE-UP GUIDANCE", wakeup_guidance or "(none set)"),
+            block("RECENT TIMELINE (oldest first)", timeline),
+            block("EVENTS SINCE LAST WAKE", pending),
+            block("ALLOWED ACTIONS", ", ".join(allowed_actions)),
             "Decide what to do now and how long to sleep. Return the JSON object.",
         ]
     )
 
 
-# --------------------------------------------------------------------------- #
 # Final report
-# --------------------------------------------------------------------------- #
+
 FINAL_SYSTEM = (
     "The order workflow is ending. Produce a concise end-of-run report as a "
     "single JSON object and nothing else:\n"
@@ -118,17 +112,13 @@ FINAL_SYSTEM = (
 
 
 def build_final_prompt(
-    *,
-    reason: str,
-    memory_summary: str,
-    full_timeline: list[dict[str, Any]],
+    *, reason: str, memory_summary: str, full_timeline: list[dict[str, Any]]
 ) -> str:
     return "\n\n".join(
         [
             f"## END REASON\n{reason}",
             f"## FINAL COMPACT MEMORY\n{memory_summary or '(empty)'}",
-            "## FULL TIMELINE\n"
-            + json.dumps(full_timeline, indent=2, default=str),
+            "## FULL TIMELINE\n" + json.dumps(full_timeline, indent=2, default=str),
             "Write the end-of-run report. Return the JSON object.",
         ]
     )

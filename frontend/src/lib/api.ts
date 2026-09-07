@@ -67,7 +67,7 @@ export const BUSINESS_ACTIONS = [
 export const WAKE_AGGRESSIVENESS = ["passive", "balanced", "aggressive"] as const;
 
 // Order lifecycle events the control panel can inject (mirrors backend
-// models.EVENT_TYPES). A free-text type is also allowed - unknown types
+// models.EVENT_TYPES). A free-text type is also allowed; unknown types
 // exercise the classifier's "escalate" path.
 export const EVENT_TYPES = [
   "order_created",
@@ -109,7 +109,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// --- supervisors ---
+// supervisors
 export const listSupervisors = () => http<Supervisor[]>("/supervisors");
 export const createSupervisor = (body: {
   name: string;
@@ -120,7 +120,7 @@ export const createSupervisor = (body: {
   extra?: Record<string, unknown>;
 }) => http<Supervisor>("/supervisors", { method: "POST", body: JSON.stringify(body) });
 
-// --- runs ---
+// runs
 export const listRuns = (status?: RunStatus) =>
   http<Run[]>(`/runs${status ? `?status=${status}` : ""}`);
 export const getRun = (id: string) => http<RunDetail>(`/runs/${id}`);
@@ -131,7 +131,7 @@ export const createRun = (body: {
   run_instructions?: string[];
 }) => http<Run>("/runs", { method: "POST", body: JSON.stringify(body) });
 
-// --- signals into a live run ---
+// signals into a live run
 export const injectEvent = (
   id: string,
   event: { type: string; payload?: Record<string, unknown> },
@@ -161,7 +161,7 @@ export const terminateRun = (id: string, reason = "manual termination") =>
     method: "POST",
   });
 
-// --- event generator ---
+// event generator
 export const listScenarios = () => http<Record<string, string[]>>("/scenarios");
 export const simulateRun = (id: string, scenario: string, delay_s = 2) =>
   http<{ ok: boolean; scenario: string; events: string[] }>(

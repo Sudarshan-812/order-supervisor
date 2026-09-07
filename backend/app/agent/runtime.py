@@ -1,10 +1,9 @@
-"""Main agent runtime - the reasoning core invoked by the `run_agent` and
+"""Main agent runtime, the reasoning core invoked by the `run_agent` and
 `produce_final_output` Temporal activities.
 
-One call to `run_agent` == one "wake". It does a single model round-trip (plus
-an optional compaction call); it does NOT loop internally. It returns a frozen
-`AgentDecision`; the *activity* is responsible for persisting the resulting
-action rows and run-state patch.
+One call to `run_agent` is one wake. It does a single model round-trip (plus an
+optional compaction call); it does not loop internally. It returns a frozen
+AgentDecision; the activity persists the resulting action rows and run-state.
 """
 from __future__ import annotations
 
@@ -50,7 +49,6 @@ async def run_agent(
     raw["actions"] = [a for a in raw.get("actions", []) if a.get("tool") in allowed]
     decision = AgentDecision.model_validate(raw)
 
-    # Fold the older log tail into the summary if it has grown too long.
     compacted = await memory.maybe_compact(run_id, decision.new_memory_summary)
     if compacted != decision.new_memory_summary:
         decision = decision.model_copy(update={"new_memory_summary": compacted})
@@ -61,7 +59,7 @@ async def run_agent(
 async def produce_final_output(
     *, run_id: str, reason: str, memory_summary: str
 ) -> FinalOutput:
-    from app import db  # local import: avoids pulling db into workflow sandbox paths
+    from app import db
 
     rows = await db.fetch_activities(run_id, newest_first=False)
     timeline = [

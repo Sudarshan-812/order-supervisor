@@ -1,7 +1,7 @@
 """Temporal worker entrypoint.
 
-Run:  python -m app.temporal.worker
-Requires a Temporal server:  temporal server start-dev
+Run: python -m app.temporal.worker
+Needs a Temporal server (temporal server start-dev).
 """
 from __future__ import annotations
 

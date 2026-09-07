@@ -1,11 +1,10 @@
-"""Temporal activities - the ONLY place side effects happen (DB writes, LLM
+"""Temporal activities, the only place side effects happen (DB writes, LLM
 calls, "sending" messages). The workflow stays deterministic and calls these.
 
-Groups:
-  * persistence  - append_activity, persist_run_state
-  * agent        - classify_event, run_agent, produce_final_output
+  * persistence: append_activity, persist_run_state
+  * agent: classify_event, run_agent, produce_final_output
 
-The 5 business actions are not separate activities: `run_agent` performs them by
+The 5 business actions are not separate activities; `run_agent` performs them by
 writing activity_log rows (type = agent_action) directly.
 """
 from __future__ import annotations
@@ -21,10 +20,9 @@ from app.agent import classifier, runtime
 from app.models import ActivityType
 
 
-# --------------------------------------------------------------------------- #
-# DTOs across the workflow <-> activity boundary (dataclasses: temporalio 1.9
-# has no pydantic converter, and these need no validation).
-# --------------------------------------------------------------------------- #
+# DTOs across the workflow / activity boundary. Plain dataclasses: temporalio 1.9
+# has no pydantic converter, and these need no validation.
+
 @dataclass
 class ClassifyRequest:
     run_id: str
@@ -45,9 +43,8 @@ class AgentInvocation:
     wakeup_guidance: str = ""
 
 
-# --------------------------------------------------------------------------- #
 # Persistence
-# --------------------------------------------------------------------------- #
+
 @activity.defn
 async def append_activity(run_id: str, type_: str, payload: dict) -> dict:
     """Append one activity_log row. Returns {id, created_at}."""
@@ -57,9 +54,8 @@ async def append_activity(run_id: str, type_: str, payload: dict) -> dict:
 
 @activity.defn
 async def persist_run_state(run_id: str, patch: dict) -> None:
-    """UPDATE runs SET <patch> WHERE id = run_id (whitelisted columns only).
-    `next_wake_at` crosses the workflow boundary as an ISO string - coerce it
-    back to a datetime for the timestamptz column."""
+    """UPDATE runs, whitelisted columns only. `next_wake_at` crosses the
+    workflow boundary as an ISO string; coerce it back to a datetime."""
     patch = dict(patch)
     nwa = patch.get("next_wake_at")
     if isinstance(nwa, str):
@@ -67,12 +63,11 @@ async def persist_run_state(run_id: str, patch: dict) -> None:
     await db.patch_run(run_id, **patch)
 
 
-# --------------------------------------------------------------------------- #
 # Agent
-# --------------------------------------------------------------------------- #
+
 @activity.defn
 async def classify_event(req: ClassifyRequest) -> dict:
-    """Lightweight wake-up policy. Logs its own wake_decision row and returns
+    """Lightweight wake-up policy. Logs a wake_decision row and returns
     {wake_now, importance, reason}."""
     verdict = await classifier.classify(
         req.event,
@@ -82,18 +77,14 @@ async def classify_event(req: ClassifyRequest) -> dict:
     await db.insert_activity(
         req.run_id,
         ActivityType.WAKE_DECISION.value,
-        {
-            "stage": "classifier",
-            "event_type": req.event.get("type"),
-            **verdict.model_dump(),
-        },
+        {"stage": "classifier", "event_type": req.event.get("type"), **verdict.model_dump()},
     )
     return verdict.model_dump()
 
 
 @activity.defn
 async def run_agent(inv: AgentInvocation) -> dict:
-    """Run one agent wake. Persists each action + a wake_decision row, then
+    """Run one agent wake. Persists each action and a wake_decision row, then
     returns the AgentDecision as a dict for the workflow to apply."""
     decision = await runtime.run_agent(
         run_id=inv.run_id,

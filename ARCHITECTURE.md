@@ -46,11 +46,11 @@ Every `incoming_event` is first passed to a **lightweight classifier**
 
 1. known important type (`payment_failed`, `shipment_delayed`, `refund_requested`,
    `customer_message_received`, `order_cancelled`) → wake now
-2. **agent-authored wake-up guidance** — crude token match against the event → wake now
+2. **agent-authored wake-up guidance**: crude token match against the event, wake now
 3. known routine type → stay asleep (unless `wake_aggressiveness == "aggressive"`)
 4. unknown type → one cheap LLM call, then the `wake_aggressiveness` knob
    (`passive` / `balanced` / `aggressive`) decides the borderline cases; the
-   default is to wake — safer to over-wake.
+   default is to wake, since over-waking is safer.
 
 Only a wake-now verdict interrupts sleep; otherwise the event waits for the next
 scheduled wake. The agent chooses its next sleep duration; the workflow clamps
@@ -77,7 +77,7 @@ trigger `continue_as_new` carrying the compact state forward.
 
 Five mocked business actions (`message_{fulfillment,payments,logistics}_team`,
 `message_customer`, `create_internal_note`). They are **not** separate Temporal
-activities — `run_agent` performs each by writing an `activity_log` row
+activities; `run_agent` performs each by writing an `activity_log` row
 (`type = agent_action`). Runtime capabilities (choose next sleep, refresh memory
 summary, author wake-up guidance, record reasoning, recommend completion) are
 fields on the frozen `AgentDecision` and applied by the workflow.
@@ -98,7 +98,7 @@ and returns it.
 to fire them:
 * CLI: `python -m app.event_generator <run_id> --scenario payment_trouble`
 * API: `POST /api/runs/{run_id}/simulate?scenario=...` (FastAPI background task
-  → `incoming_event` signals, `delay_s` apart) — also wired into the run-detail
+  to `incoming_event` signals, `delay_s` apart); also wired into the run-detail
   UI's control panel.
 
 ## Components

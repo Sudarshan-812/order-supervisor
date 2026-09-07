@@ -1,4 +1,4 @@
-"""Smoke tests - wiring imports, schema shapes, and the mock LLM path.
+"""Smoke tests: wiring imports, schema shapes, and the mock LLM path.
 
 These run without a database, a Temporal server, or a Gemini key.
 """
@@ -130,5 +130,5 @@ def test_classifier_unknown_event_fails_safe(monkeypatch):
 
     monkeypatch.setattr(llm.settings, "gemini_api_key", "", raising=False)
     v = asyncio.run(classifier.classify({"type": "warehouse_fire"}))
-    # mock classifier sees "unknown"? no - fails safe to waking on unknown types
+    # unknown types fail safe to waking
     assert v.wake_now is True

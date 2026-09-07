@@ -1,10 +1,10 @@
 """Gemini client wrapper with a deterministic mock fallback.
 
 `generate_json` asks the model for exactly one JSON object and returns it parsed.
-If ``settings.gemini_api_key`` is empty it returns a canned, schema-shaped
-response so the whole system runs offline (tests, CI, demos without a key).
+If settings.gemini_api_key is empty it returns a canned, schema-shaped response
+so the whole system runs offline (tests, CI, demos without a key).
 
-Raw API only - no LangChain / no LlamaIndex.
+Raw API only, no LangChain or LlamaIndex.
 """
 from __future__ import annotations
 
@@ -26,15 +26,14 @@ class LLMError(RuntimeError):
 
 
 async def generate_json(*, system: str, prompt: str, kind: Kind) -> dict[str, Any]:
-    """Return a single parsed JSON object from the model (or the mock)."""
+    """Return a single parsed JSON object from the model, or from the mock."""
     if not settings.llm_enabled:
         return _mock_response(kind, prompt)
     return await _gemini_json(system=system, prompt=prompt)
 
 
-# --------------------------------------------------------------------------- #
 # Real Gemini path
-# --------------------------------------------------------------------------- #
+
 async def _gemini_json(*, system: str, prompt: str) -> dict[str, Any]:
     from google import genai
     from google.genai import errors as genai_errors
@@ -47,9 +46,10 @@ async def _gemini_json(*, system: str, prompt: str) -> dict[str, Any]:
         temperature=0.2,
     )
 
+    parse_err: LLMError | None = None
     last_err: Exception | None = None
     for attempt in range(4):
-        contents = prompt if last_err is None else (
+        contents = prompt if parse_err is None else (
             prompt + "\n\nYour previous reply was not valid JSON. "
             "Return ONLY the JSON object, no prose, no code fences."
         )
@@ -59,12 +59,13 @@ async def _gemini_json(*, system: str, prompt: str) -> dict[str, Any]:
             )
             return _loads(resp.text or "")
         except genai_errors.APIError as exc:
+            last_err = exc
             if getattr(exc, "code", None) not in _TRANSIENT or attempt == 3:
                 raise LLMError(f"Gemini API error: {exc}") from exc
-            last_err = None  # transient - retry the same prompt
+            parse_err = None  # transient; retry the same prompt after a backoff
             await asyncio.sleep(2 * (attempt + 1))
         except LLMError as exc:
-            last_err = exc
+            parse_err = last_err = exc
             if attempt == 3:
                 raise LLMError(f"Gemini returned invalid JSON: {exc}") from exc
     raise LLMError(f"Gemini call failed after retries: {last_err}")
@@ -85,16 +86,15 @@ def _loads(text: str) -> dict[str, Any]:
     return obj
 
 
-# --------------------------------------------------------------------------- #
-# Deterministic mock (no API key configured)
-# --------------------------------------------------------------------------- #
+# Deterministic mock (used when no API key is configured)
+
 def _mock_response(kind: Kind, prompt: str) -> dict[str, Any]:
     low = prompt.lower()
     default_sleep = settings.default_wake_interval_minutes * 60
 
     if kind == "classifier":
-        # The classifier LLM path is only hit for events the rule table did NOT
-        # recognise. Unknown == potentially important, so the mock biases to wake.
+        # This path is only hit for events the rule table did not recognise, so
+        # the mock biases towards waking.
         routine = any(h in low for h in ("routine", "no_update", "heartbeat"))
         return {
             "wake_now": not routine,
@@ -102,7 +102,7 @@ def _mock_response(kind: Kind, prompt: str) -> dict[str, Any]:
             "reason": (
                 "mock: unrecognised event that looks routine"
                 if routine
-                else "mock: unrecognised event - waking the agent to be safe"
+                else "mock: unrecognised event, waking the agent to be safe"
             ),
         }
 
@@ -117,19 +117,15 @@ def _mock_response(kind: Kind, prompt: str) -> dict[str, Any]:
     # kind == "agent"
     actions: list[dict[str, str]] = []
     if "payment_failed" in low:
-        actions.append(
-            {
-                "tool": "message_payments_team",
-                "message": "mock: payment failed on this order - please investigate and advise.",
-            }
-        )
+        actions.append({
+            "tool": "message_payments_team",
+            "message": "mock: payment failed on this order, please investigate and advise.",
+        })
     elif "shipment_delayed" in low:
-        actions.append(
-            {
-                "tool": "message_customer",
-                "message": "mock: your shipment is delayed; we are on it and will update you.",
-            }
-        )
+        actions.append({
+            "tool": "message_customer",
+            "message": "mock: your shipment is delayed; we are on it and will update you.",
+        })
     return {
         "reasoning": "mock agent: acted on obvious signals, otherwise nothing to do.",
         "actions": actions,
@@ -145,9 +141,11 @@ def _mock_response(kind: Kind, prompt: str) -> dict[str, Any]:
 
 
 def _mock_scan_actions(low: str) -> list[str]:
-    found = []
-    for name in ("message_payments_team", "message_customer", "message_logistics_team",
-                 "message_fulfillment_team", "create_internal_note"):
-        if name in low:
-            found.append(name)
-    return found
+    return [
+        name
+        for name in (
+            "message_payments_team", "message_customer", "message_logistics_team",
+            "message_fulfillment_team", "create_internal_note",
+        )
+        if name in low
+    ]

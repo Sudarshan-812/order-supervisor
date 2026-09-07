@@ -1,4 +1,4 @@
-"""Full integration test: FastAPI -> Temporal -> Neon.
+"""Full integration test: FastAPI to Temporal to Postgres.
 
 Spins up an in-process Temporal server + worker, drives the real FastAPI app
 over ASGI, and writes/reads the real database in DATABASE_URL. It creates rows
@@ -20,7 +20,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_E2E") != "1",
-    reason="integration test - set RUN_E2E=1 (needs Neon + Temporal test server)",
+    reason="integration test; set RUN_E2E=1 (needs Postgres + Temporal test server)",
 )
 
 TQ = "order-supervisor-e2e"
@@ -65,7 +65,7 @@ async def test_full_order_lifecycle():
             async with worker, httpx.AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://t"
             ) as h:
-                # ---- supervisor with explicit config knobs ----
+                # supervisor with explicit config knobs
                 r = await h.post("/api/supervisors", json={
                     "name": "e2e", "base_instruction": "Supervise the order.",
                     "allowed_actions": ["message_payments_team", "message_customer"],
@@ -75,7 +75,7 @@ async def test_full_order_lifecycle():
                 sup = r.json(); sup_ids.append(sup["id"])
                 assert sup["model_settings"]["wake_aggressiveness"] == "aggressive"
 
-                # ---- start ONE workflow per order ----
+                # start one workflow per order
                 oid = f"e2e-{uuid.uuid4().hex[:8]}"
                 r = await h.post("/api/runs", json={
                     "supervisor_id": sup["id"], "order_id": oid,
@@ -85,7 +85,7 @@ async def test_full_order_lifecycle():
                 run = r.json(); rid = run["id"]; wf = run["workflow_id"]; run_ids.append(rid)
                 assert wf == f"order-supervisor::{oid}"
 
-                # duplicate order -> 409
+                # duplicate order is rejected with 409
                 r = await h.post("/api/runs", json={"supervisor_id": sup["id"], "order_id": oid})
                 assert r.status_code == 409
 
@@ -98,13 +98,13 @@ async def test_full_order_lifecycle():
                         for a in (await detail())["timeline"]
                     )
 
-                # ---- wake on start; reasoning + guidance in workflow state ----
+                # wake on start; reasoning and guidance land in workflow state
                 await _wait_for(has_agent_wake, "initial agent wake")
                 live = (await detail())["live"]
                 assert live["processed_wakes"] >= 1
                 assert live["last_reasoning"] and live["wakeup_guidance"]
 
-                # ---- pause: event queues, no wake ----
+                # pause: the event queues, no wake
                 assert (await h.post(f"/api/runs/{rid}/pause")).status_code == 202
                 await _wait_for(lambda: _flag(detail, "paused", True), "paused")
                 held = (await detail())["live"]["processed_wakes"]
@@ -113,17 +113,17 @@ async def test_full_order_lifecycle():
                 lv = (await detail())["live"]
                 assert lv["processed_wakes"] == held and lv["queued_events"] >= 1
 
-                # ---- resume: drains + wakes ----
+                # resume: drains the queue and wakes
                 assert (await h.post(f"/api/runs/{rid}/resume")).status_code == 202
                 await _wait_for(lambda: _gt(detail, "processed_wakes", held), "resume wake")
 
-                # ---- interrupt: immediate wake, non-terminal ----
+                # interrupt: immediate wake, non-terminal
                 w = (await detail())["live"]["processed_wakes"]
                 assert (await h.post(f"/api/runs/{rid}/interrupt")).status_code == 202
                 await _wait_for(lambda: _gt(detail, "processed_wakes", w), "interrupt wake")
                 assert (await detail())["run"]["status"] != "terminated"
 
-                # ---- event generator: scenario ends with a terminal event ----
+                # event generator: the scenario ends with a terminal event
                 r = await h.post(f"/api/runs/{rid}/simulate?scenario=payment_trouble&delay_s=0.4")
                 assert r.status_code == 202
                 await _wait_for(
@@ -138,7 +138,7 @@ async def test_full_order_lifecycle():
                 assert d["run"]["status"] == "completed"
                 assert any(a["type"] == "final_output" for a in d["timeline"])
 
-                # ---- a second run, manually terminated ----
+                # a second run, manually terminated
                 r = await h.post("/api/runs", json={"supervisor_id": sup["id"], "order_id": oid + "-b"})
                 run2 = r.json(); run_ids.append(run2["id"])
                 await asyncio.sleep(1)
