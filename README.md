@@ -5,9 +5,9 @@ creation to completion. One [Temporal](https://temporal.io) workflow runs per
 order; order events arrive as signals; an LLM agent decides when to act, when to
 sleep, and when to wake up again.
 
-> **Status: Step 2 complete.** Temporal workflow + activities + agent layer are
-> implemented and pass a time-skipping replay test. The FastAPI routes and the
-> frontend are still scaffold stubs (Steps 3-4).
+> **Status: Step 3 complete.** Backend is functional end-to-end: FastAPI ->
+> Temporal client -> `OrderSupervisorWorkflow` -> activities -> Neon. The
+> frontend is still a scaffold stub (Step 4).
 
 ## Stack
 
@@ -122,6 +122,9 @@ pytest
       `continue_as_new`) + activities (`classify_event`, `run_agent`,
       `produce_final_output`, persistence) + agent layer (`classifier`, `runtime`,
       `memory` compaction, real Gemini call + deterministic mock in `llm.py`).
-- [ ] **Step 3** - FastAPI routes wired to the Temporal client + `db.py` write
-      helpers (`create_run`, `create_supervisor`, list/read).
+- [x] **Step 3** - FastAPI routes wired to the Temporal client: `POST /api/runs`
+      starts one workflow per order (reject-duplicate -> 409), `/events`,
+      `/instructions`, `/interrupt` send signals, `GET /api/runs/{id}` returns
+      the run + activity_log timeline + a live `status` query snapshot. Verified
+      end-to-end against an in-process Temporal server + Neon.
 - [ ] **Step 4** - Next.js UI wired to the API, event generator, polling.

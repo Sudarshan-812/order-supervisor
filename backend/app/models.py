@@ -123,6 +123,10 @@ class ActivityLogRow(BaseModel):
 class RunDetail(BaseModel):
     run: Run
     timeline: list[ActivityLogRow]
+    # Best-effort live snapshot from the workflow's `status` query (queued
+    # events, standing instructions, next wake). None if the workflow can't be
+    # reached (completed, or worker down).
+    live: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------- #

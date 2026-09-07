@@ -120,15 +120,49 @@ async def count_activities(run_id: str) -> int:
 # --------------------------------------------------------------------------- #
 # runs
 # --------------------------------------------------------------------------- #
+_RUN_COLS = (
+    "id, order_id, supervisor_id, status, memory_summary, "
+    "workflow_id, next_wake_at, created_at, updated_at"
+)
+
+
+async def create_run(run_id: str, order_id: str, supervisor_id: str) -> asyncpg.Record:
+    """Insert a run row (status 'active', empty memory). id is supplied by the
+    caller so the workflow input can carry it before the workflow starts."""
+    async with pool().acquire() as conn:
+        return await conn.fetchrow(
+            f"""
+            INSERT INTO runs (id, order_id, supervisor_id, status, memory_summary)
+            VALUES ($1, $2, $3, 'active', '')
+            RETURNING {_RUN_COLS}
+            """,
+            run_id,
+            order_id,
+            supervisor_id,
+        )
+
+
+async def delete_run(run_id: str) -> None:
+    async with pool().acquire() as conn:
+        await conn.execute("DELETE FROM runs WHERE id = $1", run_id)
+
+
+async def list_runs(status: str | None = None) -> list[asyncpg.Record]:
+    args: list[Any] = []
+    where = ""
+    if status:
+        args.append(status)
+        where = "WHERE status = $1"
+    async with pool().acquire() as conn:
+        return await conn.fetch(
+            f"SELECT {_RUN_COLS} FROM runs {where} ORDER BY created_at DESC", *args
+        )
+
+
 async def fetch_run(run_id: str) -> asyncpg.Record | None:
     async with pool().acquire() as conn:
         return await conn.fetchrow(
-            """
-            SELECT id, order_id, supervisor_id, status, memory_summary,
-                   workflow_id, next_wake_at, created_at, updated_at
-            FROM runs WHERE id = $1
-            """,
-            run_id,
+            f"SELECT {_RUN_COLS} FROM runs WHERE id = $1", run_id
         )
 
 
@@ -152,10 +186,35 @@ async def patch_run(run_id: str, **fields: Any) -> None:
 # --------------------------------------------------------------------------- #
 # supervisors
 # --------------------------------------------------------------------------- #
+_SUPERVISOR_COLS = "id, name, base_instruction, model_config, created_at"
+
+
+async def create_supervisor(
+    name: str, base_instruction: str, model_settings: dict[str, Any]
+) -> asyncpg.Record:
+    async with pool().acquire() as conn:
+        return await conn.fetchrow(
+            f"""
+            INSERT INTO supervisors (name, base_instruction, model_config)
+            VALUES ($1, $2, $3)
+            RETURNING {_SUPERVISOR_COLS}
+            """,
+            name,
+            base_instruction,
+            model_settings,
+        )
+
+
+async def list_supervisors() -> list[asyncpg.Record]:
+    async with pool().acquire() as conn:
+        return await conn.fetch(
+            f"SELECT {_SUPERVISOR_COLS} FROM supervisors ORDER BY created_at DESC"
+        )
+
+
 async def fetch_supervisor(supervisor_id: str) -> asyncpg.Record | None:
     async with pool().acquire() as conn:
         return await conn.fetchrow(
-            "SELECT id, name, base_instruction, model_config, created_at "
-            "FROM supervisors WHERE id = $1",
+            f"SELECT {_SUPERVISOR_COLS} FROM supervisors WHERE id = $1",
             supervisor_id,
         )
