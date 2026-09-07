@@ -1,11 +1,13 @@
-"""asyncpg connection pool + schema bootstrap.
+"""asyncpg connection pool + schema bootstrap + typed query helpers.
 
-Thin data-access layer. Query helpers live next to the routes/activities that
-use them; this module only owns the pool lifecycle and schema creation.
+Thin data-access layer. The pool is process-global and created once; the
+activities and (later) the API routes call the helpers below.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 
@@ -14,6 +16,20 @@ from app.config import settings
 _pool: asyncpg.Pool | None = None
 
 _SCHEMA_FILE = Path(__file__).resolve().parent.parent / "schema.sql"
+
+# Columns callers are allowed to patch on `runs`.
+_RUN_PATCHABLE = {"status", "memory_summary", "workflow_id", "next_wake_at"}
+
+
+# --------------------------------------------------------------------------- #
+# Pool lifecycle
+# --------------------------------------------------------------------------- #
+async def _init_conn(conn: asyncpg.Connection) -> None:
+    """Make JSON/JSONB columns marshal to/from python dicts automatically."""
+    for typename in ("json", "jsonb"):
+        await conn.set_type_codec(
+            typename, encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+        )
 
 
 async def connect() -> asyncpg.Pool:
@@ -24,8 +40,7 @@ async def connect() -> asyncpg.Pool:
             dsn=settings.database_url,
             min_size=1,
             max_size=10,
-            # Always resolve unqualified names inside our isolated schema.
-            server_settings={"search_path": f"{settings.db_schema},public"},
+            init=_init_conn,
         )
         await _ensure_schema(_pool)
     return _pool
@@ -45,10 +60,102 @@ def pool() -> asyncpg.Pool:
 
 
 async def _ensure_schema(p: asyncpg.Pool) -> None:
-    ddl = _SCHEMA_FILE.read_text(encoding="utf-8").format(schema=settings.db_schema)
+    """Run schema.sql. It is fully idempotent (CREATE ... IF NOT EXISTS /
+    CREATE OR REPLACE), so this is safe on every boot."""
+    ddl = _SCHEMA_FILE.read_text(encoding="utf-8")
     async with p.acquire() as conn:
         await conn.execute(ddl)
 
 
-# TODO(scaffold): add typed query helpers as the API/activities are implemented,
-# e.g. create_run(), get_run(), append_activity(), update_run_state(), etc.
+# --------------------------------------------------------------------------- #
+# activity_log
+# --------------------------------------------------------------------------- #
+async def insert_activity(
+    run_id: str, type_: str, payload: dict[str, Any]
+) -> asyncpg.Record:
+    """Append one row to activity_log. Returns id + created_at."""
+    async with pool().acquire() as conn:
+        return await conn.fetchrow(
+            """
+            INSERT INTO activity_log (run_id, type, payload)
+            VALUES ($1, $2, $3)
+            RETURNING id, created_at
+            """,
+            run_id,
+            type_,
+            payload,
+        )
+
+
+async def fetch_activities(
+    run_id: str,
+    *,
+    limit: int | None = None,
+    types: list[str] | None = None,
+    newest_first: bool = False,
+) -> list[asyncpg.Record]:
+    """Read a run's activity_log, oldest-first by default."""
+    where = ["run_id = $1"]
+    args: list[Any] = [run_id]
+    if types:
+        args.append(types)
+        where.append(f"type = ANY(${len(args)})")
+    order = "DESC" if newest_first else "ASC"
+    sql = f"SELECT id, run_id, type, payload, created_at FROM activity_log " \
+          f"WHERE {' AND '.join(where)} ORDER BY id {order}"
+    if limit is not None:
+        args.append(limit)
+        sql += f" LIMIT ${len(args)}"
+    async with pool().acquire() as conn:
+        return await conn.fetch(sql, *args)
+
+
+async def count_activities(run_id: str) -> int:
+    async with pool().acquire() as conn:
+        return await conn.fetchval(
+            "SELECT count(*) FROM activity_log WHERE run_id = $1", run_id
+        )
+
+
+# --------------------------------------------------------------------------- #
+# runs
+# --------------------------------------------------------------------------- #
+async def fetch_run(run_id: str) -> asyncpg.Record | None:
+    async with pool().acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT id, order_id, supervisor_id, status, memory_summary,
+                   workflow_id, next_wake_at, created_at, updated_at
+            FROM runs WHERE id = $1
+            """,
+            run_id,
+        )
+
+
+async def patch_run(run_id: str, **fields: Any) -> None:
+    """UPDATE runs SET <fields> WHERE id = run_id. Only whitelisted columns."""
+    bad = set(fields) - _RUN_PATCHABLE
+    if bad:
+        raise ValueError(f"not patchable on runs: {sorted(bad)}")
+    if not fields:
+        return
+    cols = list(fields)
+    assignments = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(cols))
+    async with pool().acquire() as conn:
+        await conn.execute(
+            f"UPDATE runs SET {assignments} WHERE id = $1",
+            run_id,
+            *(fields[c] for c in cols),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# supervisors
+# --------------------------------------------------------------------------- #
+async def fetch_supervisor(supervisor_id: str) -> asyncpg.Record | None:
+    async with pool().acquire() as conn:
+        return await conn.fetchrow(
+            "SELECT id, name, base_instruction, model_config, created_at "
+            "FROM supervisors WHERE id = $1",
+            supervisor_id,
+        )

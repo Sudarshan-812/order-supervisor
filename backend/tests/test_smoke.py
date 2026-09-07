@@ -1,9 +1,13 @@
-"""Scaffold smoke tests - assert the wiring imports and the shapes line up.
-Replace / extend as modules get implemented.
+"""Smoke tests - wiring imports, schema shapes, and the mock LLM path.
+
+These run without a database, a Temporal server, or a Gemini key.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
+
+import pytest
 
 
 def test_all_modules_import():
@@ -28,24 +32,68 @@ def test_all_modules_import():
         importlib.import_module(mod)
 
 
-def test_tool_registry_matches_spec():
-    from app.models import BUSINESS_ACTIONS, RUNTIME_CAPABILITIES
+def test_tool_registry_is_the_five_actions():
     from app.agent.tools import tool_specs
+    from app.models import BUSINESS_ACTIONS
 
-    specs = {s["name"] for s in tool_specs(list(BUSINESS_ACTIONS))}
-    assert set(BUSINESS_ACTIONS) <= specs
-    assert set(RUNTIME_CAPABILITIES) <= specs
+    names = {s["name"] for s in tool_specs([])}
+    assert names == set(BUSINESS_ACTIONS)
+    assert len(BUSINESS_ACTIONS) == 5
+
+
+def test_frozen_contracts_are_frozen():
+    from app.models import AgentDecision
+
+    d = AgentDecision(reasoning="x", new_memory_summary="m", next_sleep_seconds=60)
+    with pytest.raises(Exception):
+        d.next_sleep_seconds = 1
+
+
+def test_activity_types_match_schema():
+    from app.models import ActivityType
+
+    assert {t.value for t in ActivityType} == {
+        "incoming_event",
+        "wake_decision",
+        "agent_action",
+        "manual_instruction",
+        "final_output",
+    }
 
 
 def test_mock_llm_runs_without_key(monkeypatch):
-    import asyncio
     from app.agent import llm
 
-    # Force mock mode regardless of whether a real key is in .env.
     monkeypatch.setattr(llm.settings, "gemini_api_key", "", raising=False)
 
-    out = asyncio.run(llm.generate_json(system="s", prompt="classify this event"))
-    assert "wake_now" in out
+    cls = asyncio.run(
+        llm.generate_json(system="s", prompt="event payment_failed", kind="classifier")
+    )
+    assert cls["wake_now"] is True
 
-    final = asyncio.run(llm.generate_json(system="s", prompt="final end-of-run report"))
+    agent = asyncio.run(
+        llm.generate_json(system="s", prompt="wake reason: start", kind="agent")
+    )
+    assert {"reasoning", "actions", "new_memory_summary", "next_sleep_seconds"} <= set(agent)
+
+    final = asyncio.run(llm.generate_json(system="s", prompt="end", kind="final"))
     assert {"summary", "key_learnings", "feedback"} <= set(final)
+
+
+def test_classifier_rules(monkeypatch):
+    from app.agent import classifier
+
+    v = asyncio.run(classifier.classify({"type": "payment_failed"}))
+    assert v.wake_now is True
+
+    v = asyncio.run(classifier.classify({"type": "payment_confirmed"}))
+    assert v.wake_now is False
+
+
+def test_classifier_unknown_event_fails_safe(monkeypatch):
+    from app.agent import classifier, llm
+
+    monkeypatch.setattr(llm.settings, "gemini_api_key", "", raising=False)
+    v = asyncio.run(classifier.classify({"type": "warehouse_fire"}))
+    # mock classifier sees "unknown"? no - fails safe to waking on unknown types
+    assert v.wake_now is True

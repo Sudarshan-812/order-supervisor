@@ -1,41 +1,74 @@
-"""Main agent runtime - invoked by the `run_agent` Temporal activity.
+"""Main agent runtime - the reasoning core invoked by the `run_agent` and
+`produce_final_output` Temporal activities.
 
-One invocation = one "wake". It does NOT loop internally beyond a small
-bounded tool-call round-trip.
-
-    async def run_agent(inv: AgentInvocation) -> AgentDecision:
-        ctx      = await memory.build_working_context(inv.run_id)
-        prompt   = prompts.build_agent_prompt(..., tool_specs(inv.allowed_actions))
-        plan     = await llm.generate_json(system=AGENT_SYSTEM, prompt=prompt)
-        actions  = []
-        for call in plan["tool_calls"]:
-            if call.name in BUSINESS_ACTIONS:
-                result = await dispatch_business_action(inv.run_id, call)  # -> activity
-                actions.append({...})
-            # runtime capabilities are folded into the decision below
-        await memory.maybe_compact(inv.run_id)
-        return AgentDecision(
-            acted=bool(actions),
-            actions=actions,
-            reasoning=plan["reasoning"],
-            memory_summary=plan.get("memory_summary", ctx["memory_summary"]),
-            wakeup_guidance=plan.get("wakeup_guidance", inv.wakeup_guidance),
-            next_sleep_seconds=plan.get("next_sleep_seconds", DEFAULT),
-            recommend_completion=plan.get("recommend_completion", False),
-            completion_reason=plan.get("completion_reason"),
-        )
+One call to `run_agent` == one "wake". It does a single model round-trip (plus
+an optional compaction call); it does NOT loop internally. It returns a frozen
+`AgentDecision`; the *activity* is responsible for persisting the resulting
+action rows and run-state patch.
 """
 from __future__ import annotations
 
-from app.temporal.activities import AgentDecision, AgentInvocation
+from typing import Any
+
+from app.agent import llm, memory, prompts
+from app.agent.tools import tool_specs
+from app.config import settings
+from app.models import AgentDecision, FinalOutput
 
 
-async def run_agent(inv: AgentInvocation) -> AgentDecision:
-    """TODO(scaffold): implement the flow in the module docstring."""
-    raise NotImplementedError("scaffold: agent.runtime.run_agent")
+async def run_agent(
+    *,
+    run_id: str,
+    reason: str,
+    base_instruction: str,
+    run_instructions: list[str],
+    order_context: dict[str, Any],
+    pending_events: list[dict[str, Any]],
+    allowed_actions: list[str],
+) -> AgentDecision:
+    ctx = await memory.build_working_context(run_id)
+    allowed = [s["name"] for s in tool_specs(allowed_actions)]
+
+    prompt = prompts.build_agent_prompt(
+        reason=reason,
+        base_instruction=base_instruction,
+        run_instructions=run_instructions,
+        order_context=order_context,
+        memory_summary=ctx["memory_summary"],
+        recent_timeline=ctx["recent_timeline"],
+        pending_events=pending_events,
+        allowed_actions=allowed,
+    )
+    raw = await llm.generate_json(system=prompts.AGENT_SYSTEM, prompt=prompt, kind="agent")
+
+    raw.setdefault("new_memory_summary", ctx["memory_summary"] or "")
+    raw.setdefault("next_sleep_seconds", settings.default_wake_interval_minutes * 60)
+    raw["actions"] = [a for a in raw.get("actions", []) if a.get("tool") in allowed]
+    decision = AgentDecision.model_validate(raw)
+
+    # Fold the older log tail into the summary if it has grown too long.
+    compacted = await memory.maybe_compact(run_id, decision.new_memory_summary)
+    if compacted != decision.new_memory_summary:
+        decision = decision.model_copy(update={"new_memory_summary": compacted})
+
+    return decision
 
 
-async def produce_final_output(run_id: str, reason: str) -> dict:
-    """End-of-run report via the LLM (FINAL_SYSTEM prompt). Persist + return
-    {summary, important_actions, key_learnings, feedback}. TODO(scaffold)."""
-    raise NotImplementedError("scaffold: agent.runtime.produce_final_output")
+async def produce_final_output(
+    *, run_id: str, reason: str, memory_summary: str
+) -> FinalOutput:
+    from app import db  # local import: avoids pulling db into workflow sandbox paths
+
+    rows = await db.fetch_activities(run_id, newest_first=False)
+    timeline = [
+        {"type": r["type"], "payload": r["payload"], "at": r["created_at"].isoformat()}
+        for r in rows
+    ]
+    raw = await llm.generate_json(
+        system=prompts.FINAL_SYSTEM,
+        prompt=prompts.build_final_prompt(
+            reason=reason, memory_summary=memory_summary, full_timeline=timeline
+        ),
+        kind="final",
+    )
+    return FinalOutput.model_validate(raw)

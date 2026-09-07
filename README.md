@@ -5,9 +5,9 @@ creation to completion. One [Temporal](https://temporal.io) workflow runs per
 order; order events arrive as signals; an LLM agent decides when to act, when to
 sleep, and when to wake up again.
 
-> **Status: scaffold.** Project structure, config, and dependencies are in
-> place. Business logic modules are stubbed with `NotImplementedError` /
-> `TODO(scaffold)` and a docstring describing the intended behaviour.
+> **Status: Step 2 complete.** Temporal workflow + activities + agent layer are
+> implemented and pass a time-skipping replay test. The FastAPI routes and the
+> frontend are still scaffold stubs (Steps 3-4).
 
 ## Stack
 
@@ -114,13 +114,14 @@ cd backend
 pytest
 ```
 
-## What still needs implementing
+## Build progress
 
-See `TODO(scaffold)` / `NotImplementedError` markers. High level:
-
-1. `db.py` query helpers + `api/routes.py` handlers.
-2. `temporal/workflows.py` main loop (wait_condition + timer, signal handling,
-   workflow-owned completion, `continue_as_new`).
-3. `temporal/activities.py` bodies (persistence, classifier, agent, tools).
-4. `agent/*` runtime, classifier, memory compaction, real Gemini call in `llm.py`.
-5. Frontend: wire pages to `lib/api.ts`, add polling.
+- [x] **Step 1** - monorepo scaffold + `schema.sql` (3 tables on Neon).
+- [x] **Step 2** - `OrderSupervisorWorkflow` (wait_condition loop, `incoming_event`
+      / `manual_instruction` / `interrupt` signals, workflow-owned completion,
+      `continue_as_new`) + activities (`classify_event`, `run_agent`,
+      `produce_final_output`, persistence) + agent layer (`classifier`, `runtime`,
+      `memory` compaction, real Gemini call + deterministic mock in `llm.py`).
+- [ ] **Step 3** - FastAPI routes wired to the Temporal client + `db.py` write
+      helpers (`create_run`, `create_supervisor`, list/read).
+- [ ] **Step 4** - Next.js UI wired to the API, event generator, polling.

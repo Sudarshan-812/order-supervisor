@@ -16,9 +16,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.models import (
-    Activity,
-    InstructionIn,
-    OrderEvent,
+    ActivityLogRow,
+    IncomingEvent,
+    ManualInstruction,
     Run,
     RunCreate,
     RunDetail,
@@ -70,8 +70,8 @@ async def get_run(run_id: str) -> RunDetail:
     raise HTTPException(501, "scaffold: not implemented")
 
 
-@router.get("/runs/{run_id}/activities", response_model=list[Activity])
-async def get_run_activities(run_id: str, kind: str | None = None) -> list[Activity]:
+@router.get("/runs/{run_id}/activities", response_model=list[ActivityLogRow])
+async def get_run_activities(run_id: str, type: str | None = None) -> list[ActivityLogRow]:
     raise HTTPException(501, "scaffold: not implemented")
 
 
@@ -79,13 +79,13 @@ async def get_run_activities(run_id: str, kind: str | None = None) -> list[Activ
 # Signals into a live run
 # --------------------------------------------------------------------------- #
 @router.post("/runs/{run_id}/events", status_code=202)
-async def inject_event(run_id: str, event: OrderEvent) -> dict:
+async def inject_event(run_id: str, event: IncomingEvent) -> dict:
     """Deliver an order event into the workflow via the ``order_event`` signal."""
     raise HTTPException(501, "scaffold: not implemented")
 
 
 @router.post("/runs/{run_id}/instructions", status_code=202)
-async def add_instruction(run_id: str, body: InstructionIn) -> dict:
+async def add_instruction(run_id: str, body: ManualInstruction) -> dict:
     """Append a run-specific instruction (``add_instruction`` signal)."""
     raise HTTPException(501, "scaffold: not implemented")
 

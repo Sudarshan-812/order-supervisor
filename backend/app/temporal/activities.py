@@ -1,138 +1,142 @@
-"""Temporal activities - the only place side effects happen (DB writes, LLM
+"""Temporal activities - the ONLY place side effects happen (DB writes, LLM
 calls, "sending" messages). The workflow stays deterministic and calls these.
 
-Grouped:
-  * persistence  - write runs/activities rows
-  * agent        - classifier + main agent runtime + final output
-  * tools        - the 5 business actions (each writes an activity record)
+Groups:
+  * persistence  - append_activity, persist_run_state
+  * agent        - classify_event, run_agent, produce_final_output
+
+The 5 business actions are not separate activities: `run_agent` performs them by
+writing activity_log rows (type = agent_action) directly.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from temporalio import activity
 
+from app import db
+from app.agent import classifier, runtime
+from app.models import ActivityType
+
 
 # --------------------------------------------------------------------------- #
-# DTOs across the workflow <-> activity boundary
+# DTOs across the workflow <-> activity boundary (dataclasses: temporalio 1.9
+# has no pydantic converter, and these need no validation).
 # --------------------------------------------------------------------------- #
 @dataclass
 class ClassifyRequest:
     run_id: str
     event: dict
-    wakeup_guidance: str
-    wake_aggressiveness: str
-
-
-@dataclass
-class ClassifyResult:
-    wake_now: bool
-    importance: str          # low | medium | high
-    reason: str
 
 
 @dataclass
 class AgentInvocation:
     run_id: str
-    reason: str              # "start" | "event" | "scheduled_wake" | "instruction" | "terminate"
+    reason: str  # start | scheduled_wake | event | instruction | terminate
     base_instruction: str
-    instructions: list[str]
-    memory_summary: str
-    wakeup_guidance: str
-    pending_events: list[dict]
-    order_context: dict[str, Any]
-    allowed_actions: list[str]
-
-
-@dataclass
-class AgentDecision:
-    acted: bool
-    actions: list[dict]                 # [{tool, args, result}] - already recorded
-    reasoning: str
-    memory_summary: str                 # refreshed rolling summary
-    wakeup_guidance: str                # refreshed classifier hints
-    next_sleep_seconds: int             # workflow clamps to [floor, ceiling]
-    recommend_completion: bool
-    completion_reason: str | None = None
+    run_instructions: list[str] = field(default_factory=list)
+    order_context: dict[str, Any] = field(default_factory=dict)
+    pending_events: list[dict] = field(default_factory=list)
+    allowed_actions: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
-# Persistence activities
+# Persistence
 # --------------------------------------------------------------------------- #
+@activity.defn
+async def append_activity(run_id: str, type_: str, payload: dict) -> dict:
+    """Append one activity_log row. Returns {id, created_at}."""
+    rec = await db.insert_activity(run_id, type_, payload)
+    return {"id": rec["id"], "created_at": rec["created_at"].isoformat()}
+
+
 @activity.defn
 async def persist_run_state(run_id: str, patch: dict) -> None:
-    """UPDATE order_supervisor.runs SET ... WHERE id = run_id."""
-    raise NotImplementedError("scaffold: persist_run_state")
-
-
-@activity.defn
-async def append_activity(run_id: str, kind: str, title: str, payload: dict, important: bool = False) -> int:
-    """INSERT INTO order_supervisor.activities ... RETURNING id."""
-    raise NotImplementedError("scaffold: append_activity")
-
-
-# --------------------------------------------------------------------------- #
-# Agent activities
-# --------------------------------------------------------------------------- #
-@activity.defn
-async def classify_event(req: ClassifyRequest) -> ClassifyResult:
-    """Lightweight wake-up policy (see app.agent.classifier). Rule-based first,
-    optional cheap LLM check for unknown events."""
-    raise NotImplementedError("scaffold: classify_event")
-
-
-@activity.defn
-async def run_agent(inv: AgentInvocation) -> AgentDecision:
-    """Main agent runtime (see app.agent.runtime): reason -> tool calls ->
-    memory refresh -> next-sleep decision."""
-    raise NotImplementedError("scaffold: run_agent")
-
-
-@activity.defn
-async def produce_final_output(run_id: str, reason: str) -> dict:
-    """End-of-run step: summary, important actions, key learnings, feedback.
-    Persists to runs.final_output and returns it."""
-    raise NotImplementedError("scaffold: produce_final_output")
+    """UPDATE runs SET <patch> WHERE id = run_id (whitelisted columns only).
+    `next_wake_at` crosses the workflow boundary as an ISO string - coerce it
+    back to a datetime for the timestamptz column."""
+    patch = dict(patch)
+    nwa = patch.get("next_wake_at")
+    if isinstance(nwa, str):
+        patch["next_wake_at"] = datetime.fromisoformat(nwa)
+    await db.patch_run(run_id, **patch)
 
 
 # --------------------------------------------------------------------------- #
-# Tool activities (business actions) - all mocked, all write an activity record
+# Agent
 # --------------------------------------------------------------------------- #
 @activity.defn
-async def tool_message_fulfillment_team(run_id: str, message: str) -> dict:
-    raise NotImplementedError("scaffold: tool_message_fulfillment_team")
+async def classify_event(req: ClassifyRequest) -> dict:
+    """Lightweight wake-up policy. Logs its own wake_decision row and returns
+    {wake_now, importance, reason}."""
+    verdict = await classifier.classify(req.event)
+    await db.insert_activity(
+        req.run_id,
+        ActivityType.WAKE_DECISION.value,
+        {
+            "stage": "classifier",
+            "event_type": req.event.get("type"),
+            **verdict.model_dump(),
+        },
+    )
+    return verdict.model_dump()
 
 
 @activity.defn
-async def tool_message_payments_team(run_id: str, message: str) -> dict:
-    raise NotImplementedError("scaffold: tool_message_payments_team")
+async def run_agent(inv: AgentInvocation) -> dict:
+    """Run one agent wake. Persists each action + a wake_decision row, then
+    returns the AgentDecision as a dict for the workflow to apply."""
+    decision = await runtime.run_agent(
+        run_id=inv.run_id,
+        reason=inv.reason,
+        base_instruction=inv.base_instruction,
+        run_instructions=inv.run_instructions,
+        order_context=inv.order_context,
+        pending_events=inv.pending_events,
+        allowed_actions=inv.allowed_actions,
+    )
+
+    for action in decision.actions:
+        await db.insert_activity(
+            inv.run_id,
+            ActivityType.AGENT_ACTION.value,
+            {"tool": action.tool, "message": action.message, "result": "recorded"},
+        )
+
+    await db.insert_activity(
+        inv.run_id,
+        ActivityType.WAKE_DECISION.value,
+        {
+            "stage": "agent",
+            "reason": inv.reason,
+            "reasoning": decision.reasoning,
+            "action_count": len(decision.actions),
+            "next_sleep_seconds": decision.next_sleep_seconds,
+            "recommend_completion": decision.recommend_completion,
+            "completion_reason": decision.completion_reason,
+        },
+    )
+    return decision.model_dump()
 
 
 @activity.defn
-async def tool_message_logistics_team(run_id: str, message: str) -> dict:
-    raise NotImplementedError("scaffold: tool_message_logistics_team")
-
-
-@activity.defn
-async def tool_message_customer(run_id: str, message: str) -> dict:
-    raise NotImplementedError("scaffold: tool_message_customer")
-
-
-@activity.defn
-async def tool_create_internal_note(run_id: str, note: str) -> dict:
-    raise NotImplementedError("scaffold: tool_create_internal_note")
+async def produce_final_output(run_id: str, reason: str, memory_summary: str) -> dict:
+    """End-of-run report. Logs a final_output row and returns it."""
+    final = await runtime.produce_final_output(
+        run_id=run_id, reason=reason, memory_summary=memory_summary
+    )
+    await db.insert_activity(
+        run_id, ActivityType.FINAL_OUTPUT.value, {"reason": reason, **final.model_dump()}
+    )
+    return final.model_dump()
 
 
 ALL_ACTIVITIES = [
-    persist_run_state,
     append_activity,
+    persist_run_state,
     classify_event,
     run_agent,
     produce_final_output,
-    tool_message_fulfillment_team,
-    tool_message_payments_team,
-    tool_message_logistics_team,
-    tool_message_customer,
-    tool_create_internal_note,
 ]
