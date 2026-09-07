@@ -1,0 +1,20 @@
+# --- Web / API ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# --- Temporal orchestration ---
+temporalio==1.9.0
+
+# --- Persistence (PostgreSQL / Supabase) ---
+asyncpg==0.30.0
+
+# --- LLM (Google Gemini) ---
+google-genai==0.8.0
+httpx==0.28.1
+
+# --- Dev / tests ---
+pytest==8.3.4
+pytest-asyncio==0.25.2
