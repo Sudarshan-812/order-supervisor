@@ -48,10 +48,12 @@ order-supervisor/
 │   │       ├── prompts.py       prompt templates
 │   │       └── llm.py           Gemini wrapper + mock
 │   ├── schema.sql              3-table DDL (run in any Postgres)
+│   ├── scripts/dev_stack.py    one-process API + worker + in-proc Temporal
 │   ├── requirements.txt
-│   └── tests/
+│   └── tests/                  test_smoke.py (unit) · test_e2e.py (RUN_E2E=1)
 ├── frontend/                   Next.js UI (runs, supervisors, run detail)
 ├── ARCHITECTURE.md
+├── WALKTHROUGH.md              scripted demo (record the video from this)
 └── README.md
 ```
 
@@ -87,11 +89,19 @@ the idempotent `schema.sql` on startup.)
 Leave `GEMINI_API_KEY` blank to run in deterministic **mock mode**; set it (and
 `GEMINI_MODEL`) for real reasoning.
 
-Run (three terminals):
+Run (three terminals, from `backend/` with the venv active):
 
 ```bash
-uvicorn app.main:app --reload --port 8000        # API
-python -m app.temporal.worker                    # Temporal worker
+temporal server start-dev                         # terminal 1  (UI: http://localhost:8233)
+uvicorn app.main:app --reload --port 8000         # terminal 2  API   (docs: /docs)
+python -m app.temporal.worker                     # terminal 3  Temporal worker
+```
+
+**No Temporal CLI?** One process instead of the three above — starts an
+in-process Temporal server + worker + API together:
+
+```bash
+python -m scripts.dev_stack                       # API on :8000
 ```
 
 ### 2. Frontend
@@ -119,7 +129,21 @@ or hit the API: `POST /api/runs/<run_id>/simulate?scenario=payment_trouble`.
 
 ```bash
 cd backend
-pytest
+
+pytest                              # unit / smoke - no servers, no network
+
+RUN_E2E=1 pytest tests/test_e2e.py -s
+#   full integration: spins up an in-process Temporal + worker, drives the real
+#   FastAPI app over ASGI against your Neon DB, exercises one workflow per order,
+#   wake/sleep, the 5 actions, pause/resume/interrupt/terminate, the event
+#   generator, and workflow-owned completion. Creates rows and deletes them. ~1m.
+```
+
+Manual poking: start the backend, open <http://localhost:8000/docs>, or drive
+the UI per `WALKTHROUGH.md`. Send a scenario without the UI:
+
+```bash
+python -m app.event_generator <run_id> --scenario payment_trouble
 ```
 
 ## API
