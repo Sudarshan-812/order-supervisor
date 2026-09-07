@@ -5,11 +5,13 @@ creation to completion. One [Temporal](https://temporal.io) workflow runs per
 order; order events arrive as signals; an LLM agent decides when to act, when to
 sleep, and when to wake up again.
 
-> **Status: POC complete (Steps 1-4).** FastAPI -> Temporal client ->
-> `OrderSupervisorWorkflow` -> activities -> Neon, driven by a Next.js UI
-> (supervisor templates, runs dashboard + start-run, run detail with timeline /
-> memory / final output, and a control panel to inject events + instructions +
-> interrupt).
+> **Status: complete.** FastAPI → Temporal → `OrderSupervisorWorkflow` →
+> activities → Neon, driven by a Next.js UI. One workflow per order; events as
+> signals; a lightweight classifier gates wake/sleep; the agent reasons, runs
+> the 5 business actions, refreshes memory, authors wake-up guidance, and picks
+> its next sleep; completion is workflow-owned. Controls: inject events, add
+> instructions, pause / resume / interrupt / terminate, and a scenario-based
+> event generator. See `WALKTHROUGH.md` for a scripted demo.
 
 ## Stack
 
@@ -78,13 +80,12 @@ cp .env.example .env               # then fill in values
 ```
 
 Set `DATABASE_URL` to your Neon **direct** connection string (see
-`.env.example`), then create the tables:
+`.env.example`), then create the tables — paste `backend/schema.sql` into the
+Neon SQL editor, or `psql "$DATABASE_URL" -f schema.sql`. (The backend also runs
+the idempotent `schema.sql` on startup.)
 
-```bash
-psql "$DATABASE_URL" -f schema.sql
-```
-
-Leave `GEMINI_API_KEY` blank to run in deterministic **mock mode**.
+Leave `GEMINI_API_KEY` blank to run in deterministic **mock mode**; set it (and
+`GEMINI_MODEL`) for real reasoning.
 
 Run (three terminals):
 
@@ -104,10 +105,15 @@ npm run dev                                       # http://localhost:3000
 
 ### 3. Send events
 
+From the run-detail page's **Event generator** panel, or:
+
 ```bash
 cd backend
 python -m app.event_generator <run_id> --scenario payment_trouble
+# scenarios: happy_path | payment_trouble | delayed_shipment | unknown_event
 ```
+
+or hit the API: `POST /api/runs/<run_id>/simulate?scenario=payment_trouble`.
 
 ## Tests
 
@@ -116,21 +122,40 @@ cd backend
 pytest
 ```
 
-## Build progress
+## API
 
-- [x] **Step 1** - monorepo scaffold + `schema.sql` (3 tables on Neon).
-- [x] **Step 2** - `OrderSupervisorWorkflow` (wait_condition loop, `incoming_event`
-      / `manual_instruction` / `interrupt` signals, workflow-owned completion,
-      `continue_as_new`) + activities (`classify_event`, `run_agent`,
-      `produce_final_output`, persistence) + agent layer (`classifier`, `runtime`,
-      `memory` compaction, real Gemini call + deterministic mock in `llm.py`).
-- [x] **Step 3** - FastAPI routes wired to the Temporal client: `POST /api/runs`
-      starts one workflow per order (reject-duplicate -> 409), `/events`,
-      `/instructions`, `/interrupt` send signals, `GET /api/runs/{id}` returns
-      the run + activity_log timeline + a live `status` query snapshot. Verified
-      end-to-end against an in-process Temporal server + Neon.
-- [x] **Step 4** - Next.js UI wired to the API: `/` runs dashboard + start-run
-      panel, `/supervisors` template CRUD, `/runs/[runId]` timeline + memory +
-      final output + control panel (inject event / add instruction / interrupt).
-      3s polling; `npm run build` clean; verified through the dev proxy against
-      a live backend.
+| Method & path | Purpose |
+| --- | --- |
+| `POST /api/supervisors` · `GET /api/supervisors[/{id}]` | supervisor templates (name, base instruction, allowed actions, default wake minutes, wake aggressiveness) |
+| `POST /api/runs` | start one workflow per order (reject-duplicate → `409`) |
+| `GET /api/runs?status=` · `GET /api/runs/{id}` | run list / run + `activity_log` timeline + live `status` snapshot |
+| `GET /api/runs/{id}/activities?type=` | filtered timeline |
+| `POST /api/runs/{id}/events` | `incoming_event` signal |
+| `POST /api/runs/{id}/instructions` | `manual_instruction` signal |
+| `POST /api/runs/{id}/pause` · `/resume` | halt / restart agent inference |
+| `POST /api/runs/{id}/interrupt` | force an immediate wake (non-terminal) |
+| `POST /api/runs/{id}/terminate` | workflow-owned completion |
+| `POST /api/runs/{id}/simulate?scenario=` · `GET /api/scenarios` | event generator |
+
+## Acceptance criteria — where each is met
+
+| Criterion | Where |
+| --- | --- |
+| one Temporal workflow per order | `temporal/client.py` `start_order_workflow` (reject-duplicate) |
+| events as signals | `workflows.py` `incoming_event` |
+| wake on start / signal / scheduled | `run()` initial wake · classifier · `wait_condition` timeout |
+| sleep & wake later | `AgentDecision.next_sleep_seconds` → `wait_condition(timeout=…)` |
+| execute the 5 business actions, stored as activity records | `activities.py` `run_agent` → `activity_log` rows (`type=agent_action`) |
+| event + action history in the UI | `/runs/[runId]` timeline |
+| timeline + compact memory | `activity_log` + `runs.memory_summary` (+ `agent/memory.py` compaction) |
+| inject events + extra instructions from the UI | run-detail control panel |
+| final summary + learnings + feedback | `produce_final_output` → `final_output` row + workflow return |
+| pause / resume / interrupt / terminate | `pause`/`resume`/`interrupt`/`terminate` signals + endpoints + UI |
+
+## Deliverables
+
+- **Source code** — this repo.
+- **README** — this file. **Architecture note** — `ARCHITECTURE.md`.
+- **Walkthrough** — `WALKTHROUGH.md` is a scripted run-through (create supervisor →
+  start run → events → sleep/wake → actions → instruction → interrupt/terminate →
+  final output). Record a screen capture following it.

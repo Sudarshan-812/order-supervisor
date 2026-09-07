@@ -29,17 +29,20 @@ from app.models import ActivityType
 class ClassifyRequest:
     run_id: str
     event: dict
+    wakeup_guidance: str = ""
+    wake_aggressiveness: str = "balanced"
 
 
 @dataclass
 class AgentInvocation:
     run_id: str
-    reason: str  # start | scheduled_wake | event | instruction | terminate
+    reason: str  # start | scheduled_wake | event | instruction | interrupt | resume
     base_instruction: str
     run_instructions: list[str] = field(default_factory=list)
     order_context: dict[str, Any] = field(default_factory=dict)
     pending_events: list[dict] = field(default_factory=list)
     allowed_actions: list[str] = field(default_factory=list)
+    wakeup_guidance: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -71,7 +74,11 @@ async def persist_run_state(run_id: str, patch: dict) -> None:
 async def classify_event(req: ClassifyRequest) -> dict:
     """Lightweight wake-up policy. Logs its own wake_decision row and returns
     {wake_now, importance, reason}."""
-    verdict = await classifier.classify(req.event)
+    verdict = await classifier.classify(
+        req.event,
+        wakeup_guidance=req.wakeup_guidance,
+        aggressiveness=req.wake_aggressiveness,
+    )
     await db.insert_activity(
         req.run_id,
         ActivityType.WAKE_DECISION.value,
@@ -96,6 +103,7 @@ async def run_agent(inv: AgentInvocation) -> dict:
         order_context=inv.order_context,
         pending_events=inv.pending_events,
         allowed_actions=inv.allowed_actions,
+        wakeup_guidance=inv.wakeup_guidance,
     )
 
     for action in decision.actions:
@@ -114,6 +122,7 @@ async def run_agent(inv: AgentInvocation) -> dict:
             "reasoning": decision.reasoning,
             "action_count": len(decision.actions),
             "next_sleep_seconds": decision.next_sleep_seconds,
+            "wakeup_guidance": decision.wakeup_guidance,
             "recommend_completion": decision.recommend_completion,
             "completion_reason": decision.completion_reason,
         },

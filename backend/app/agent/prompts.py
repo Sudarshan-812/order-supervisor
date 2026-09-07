@@ -47,12 +47,17 @@ AGENT_SYSTEM = (
     "Available actions (each just posts a message / note - no external system):\n"
     "  message_fulfillment_team, message_payments_team, message_logistics_team,\n"
     "  message_customer, create_internal_note\n\n"
+    "You may also author 'wake-up guidance': a short line telling the lightweight "
+    "classifier which future events should wake you immediately vs wait for the "
+    "next scheduled check. Return it every time (repeat the current one if it "
+    "still holds).\n\n"
     "Respond with a single JSON object and nothing else:\n"
     "{\n"
     '  "reasoning": string,\n'
     '  "actions": [{"tool": <action name>, "message": string}],\n'
     '  "new_memory_summary": string,\n'
     '  "next_sleep_seconds": integer (>= 1),\n'
+    '  "wakeup_guidance": string,\n'
     '  "recommend_completion": boolean,\n'
     '  "completion_reason": string | null\n'
     "}"
@@ -69,6 +74,7 @@ def build_agent_prompt(
     recent_timeline: list[dict[str, Any]],
     pending_events: list[dict[str, Any]],
     allowed_actions: list[str],
+    wakeup_guidance: str = "",
 ) -> str:
     def _block(title: str, body: str) -> str:
         return f"## {title}\n{body}".rstrip()
@@ -91,6 +97,7 @@ def build_agent_prompt(
             _block("RUN INSTRUCTIONS", instr),
             _block("ORDER CONTEXT", json.dumps(order_context, indent=2, default=str)),
             _block("COMPACT MEMORY", memory_summary or "(empty)"),
+            _block("CURRENT WAKE-UP GUIDANCE", wakeup_guidance or "(none set)"),
             _block("RECENT TIMELINE (oldest first)", timeline),
             _block("EVENTS SINCE LAST WAKE", pending),
             _block("ALLOWED ACTIONS", ", ".join(allowed_actions)),

@@ -80,6 +80,23 @@ async def signal_interrupt(workflow_id: str, reason: str) -> None:
     )
 
 
+async def signal_pause(workflow_id: str) -> None:
+    await get_client()
+    await workflow_handle(workflow_id).signal(OrderSupervisorWorkflow.pause)
+
+
+async def signal_resume(workflow_id: str) -> None:
+    await get_client()
+    await workflow_handle(workflow_id).signal(OrderSupervisorWorkflow.resume)
+
+
+async def signal_terminate(workflow_id: str, reason: str) -> None:
+    await get_client()
+    await workflow_handle(workflow_id).signal(
+        OrderSupervisorWorkflow.terminate, reason
+    )
+
+
 async def query_status(workflow_id: str) -> dict | None:
     """Live snapshot from the workflow's `status` query, or None if it can't be
     reached (closed / not found / worker down)."""

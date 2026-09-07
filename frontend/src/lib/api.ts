@@ -43,14 +43,28 @@ export interface RunDetail {
   timeline: ActivityLogRow[];
   live: {
     status: string;
+    paused: boolean;
     next_wake_at: string | null;
     queued_events: number;
     standing_instructions: string[];
     memory_summary: string;
+    wakeup_guidance: string;
+    last_reasoning: string;
     processed_wakes: number;
     terminating: boolean;
   } | null;
 }
+
+// The 5 required business actions (mirrors backend models.BUSINESS_ACTIONS).
+export const BUSINESS_ACTIONS = [
+  "message_fulfillment_team",
+  "message_payments_team",
+  "message_logistics_team",
+  "message_customer",
+  "create_internal_note",
+] as const;
+
+export const WAKE_AGGRESSIVENESS = ["passive", "balanced", "aggressive"] as const;
 
 // Order lifecycle events the control panel can inject (mirrors backend
 // models.EVENT_TYPES). A free-text type is also allowed - unknown types
@@ -100,7 +114,10 @@ export const listSupervisors = () => http<Supervisor[]>("/supervisors");
 export const createSupervisor = (body: {
   name: string;
   base_instruction: string;
-  model_settings?: Record<string, unknown>;
+  allowed_actions?: string[];
+  default_wake_minutes?: number;
+  wake_aggressiveness?: (typeof WAKE_AGGRESSIVENESS)[number];
+  extra?: Record<string, unknown>;
 }) => http<Supervisor>("/supervisors", { method: "POST", body: JSON.stringify(body) });
 
 // --- runs ---
@@ -126,7 +143,28 @@ export const addInstruction = (id: string, text: string) =>
     body: JSON.stringify({ text }),
   });
 
-export const interruptRun = (id: string, reason = "manual interrupt") =>
+// interrupt = force an immediate agent wake (non-terminal)
+export const interruptRun = (id: string, reason = "operator interrupt") =>
   http<{ ok: boolean }>(`/runs/${id}/interrupt?reason=${encodeURIComponent(reason)}`, {
     method: "POST",
   });
+
+export const pauseRun = (id: string) =>
+  http<{ ok: boolean }>(`/runs/${id}/pause`, { method: "POST" });
+
+export const resumeRun = (id: string) =>
+  http<{ ok: boolean }>(`/runs/${id}/resume`, { method: "POST" });
+
+// terminate = workflow-owned completion (runs the final-output step, then exits)
+export const terminateRun = (id: string, reason = "manual termination") =>
+  http<{ ok: boolean }>(`/runs/${id}/terminate?reason=${encodeURIComponent(reason)}`, {
+    method: "POST",
+  });
+
+// --- event generator ---
+export const listScenarios = () => http<Record<string, string[]>>("/scenarios");
+export const simulateRun = (id: string, scenario: string, delay_s = 2) =>
+  http<{ ok: boolean; scenario: string; events: string[] }>(
+    `/runs/${id}/simulate?scenario=${encodeURIComponent(scenario)}&delay_s=${delay_s}`,
+    { method: "POST" },
+  );

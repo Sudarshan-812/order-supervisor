@@ -137,6 +137,8 @@ def _mock_response(kind: Kind, prompt: str) -> dict[str, Any]:
         + ("handled an exception; " if actions else "")
         + "waiting for next event.",
         "next_sleep_seconds": default_sleep,
+        "wakeup_guidance": "wake immediately on payment_failed, shipment_delayed, "
+        "refund_requested, cancellations, or angry customer messages",
         "recommend_completion": "delivered" in low,
         "completion_reason": "mock: saw a delivered event" if "delivered" in low else None,
     }

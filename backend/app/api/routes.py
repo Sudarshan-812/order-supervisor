@@ -6,16 +6,21 @@ Wiring:
     GET  /runs[/{id}]  -> DB row(s) + activity_log timeline + live status query
     /events            -> `incoming_event`     signal
     /instructions      -> `manual_instruction` signal
-    /interrupt         -> `interrupt`          signal (workflow-owned completion)
+    /interrupt         -> `interrupt`  signal (force an immediate wake, non-terminal)
+    /pause /resume     -> `pause` / `resume` signals
+    /terminate         -> `terminate` signal  (workflow-owned completion)
+    /simulate          -> fire a canned event scenario into the run (event generator)
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app import db
+from app.event_generator import SCENARIOS
 from app.models import (
     ActivityLogRow,
     IncomingEvent,
@@ -95,7 +100,7 @@ async def _load_supervisor_or_404(supervisor_id: str) -> Any:
 @router.post("/supervisors", response_model=Supervisor, status_code=201)
 async def create_supervisor(body: SupervisorCreate) -> Supervisor:
     row = await db.create_supervisor(
-        body.name, body.base_instruction, body.model_settings
+        body.name, body.base_instruction, body.to_model_config()
     )
     return _supervisor(row)
 
@@ -131,6 +136,7 @@ async def create_run(body: RunCreate) -> Run:
         run_instructions=body.run_instructions,
         allowed_actions=list(cfg.get("allowed_actions", [])),
         default_wake_minutes=int(cfg.get("default_wake_minutes", 60)),
+        wake_aggressiveness=str(cfg.get("wake_aggressiveness", "balanced")),
     )
     try:
         wf_id = await tc.start_order_workflow(inp)
@@ -197,8 +203,64 @@ async def add_instruction(run_id: str, body: ManualInstruction) -> dict:
 
 
 @router.post("/runs/{run_id}/interrupt", status_code=202)
-async def interrupt_run(run_id: str, reason: str = "manual interrupt") -> dict:
-    """Request workflow-owned completion (`interrupt` signal): the workflow runs
-    the agent's final-output step, then exits."""
+async def interrupt_run(run_id: str, reason: str = "operator interrupt") -> dict:
+    """Force an immediate agent wake to re-assess the order now. Non-terminal."""
     await _signal_or_409(run_id, lambda wf: tc.signal_interrupt(wf, reason))
     return {"ok": True}
+
+
+@router.post("/runs/{run_id}/pause", status_code=202)
+async def pause_run(run_id: str) -> dict:
+    """Halt agent inference. Events still queue; no wakes fire until resume."""
+    await _signal_or_409(run_id, lambda wf: tc.signal_pause(wf))
+    return {"ok": True}
+
+
+@router.post("/runs/{run_id}/resume", status_code=202)
+async def resume_run(run_id: str) -> dict:
+    """Resume a paused run and wake the agent to catch up."""
+    await _signal_or_409(run_id, lambda wf: tc.signal_resume(wf))
+    return {"ok": True}
+
+
+@router.post("/runs/{run_id}/terminate", status_code=202)
+async def terminate_run(run_id: str, reason: str = "manual termination") -> dict:
+    """Request workflow-owned completion (`terminate` signal): the workflow runs
+    the agent's final-output step, then exits with status 'terminated'."""
+    await _signal_or_409(run_id, lambda wf: tc.signal_terminate(wf, reason))
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Event generator - fire a canned scenario of events into a run
+# --------------------------------------------------------------------------- #
+async def _play_scenario(workflow_id: str, events: list[dict], delay_s: float) -> None:
+    for i, ev in enumerate(events):
+        if i:
+            await asyncio.sleep(delay_s)
+        try:
+            await tc.signal_incoming_event(workflow_id, {"payload": {}, **ev})
+        except Exception:  # run may have completed mid-scenario - stop quietly
+            return
+
+
+@router.post("/runs/{run_id}/simulate", status_code=202)
+async def simulate(
+    run_id: str, background: BackgroundTasks, scenario: str = "happy_path", delay_s: float = 2.0
+) -> dict:
+    """Event generator: replay a named scenario of order events into the run,
+    `delay_s` apart, so you can watch the agent wake / act / sleep."""
+    if scenario not in SCENARIOS:
+        raise HTTPException(422, f"unknown scenario; choose from {sorted(SCENARIOS)}")
+    row = await _load_run_or_404(run_id)
+    if not row["workflow_id"]:
+        raise HTTPException(409, "run has no workflow (start failed?)")
+    events = SCENARIOS[scenario]
+    background.add_task(_play_scenario, row["workflow_id"], events, delay_s)
+    return {"ok": True, "scenario": scenario, "events": [e["type"] for e in events]}
+
+
+@router.get("/scenarios", response_model=dict)
+async def list_scenarios() -> dict:
+    """Names + event sequences the /simulate endpoint and CLI generator support."""
+    return {name: [e["type"] for e in evs] for name, evs in SCENARIOS.items()}

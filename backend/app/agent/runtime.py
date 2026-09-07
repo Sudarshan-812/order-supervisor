@@ -25,6 +25,7 @@ async def run_agent(
     order_context: dict[str, Any],
     pending_events: list[dict[str, Any]],
     allowed_actions: list[str],
+    wakeup_guidance: str = "",
 ) -> AgentDecision:
     ctx = await memory.build_working_context(run_id)
     allowed = [s["name"] for s in tool_specs(allowed_actions)]
@@ -38,11 +39,14 @@ async def run_agent(
         recent_timeline=ctx["recent_timeline"],
         pending_events=pending_events,
         allowed_actions=allowed,
+        wakeup_guidance=wakeup_guidance,
     )
     raw = await llm.generate_json(system=prompts.AGENT_SYSTEM, prompt=prompt, kind="agent")
 
     raw.setdefault("new_memory_summary", ctx["memory_summary"] or "")
     raw.setdefault("next_sleep_seconds", settings.default_wake_interval_minutes * 60)
+    if not raw.get("wakeup_guidance"):
+        raw["wakeup_guidance"] = wakeup_guidance  # keep the current guidance
     raw["actions"] = [a for a in raw.get("actions", []) if a.get("tool") in allowed]
     decision = AgentDecision.model_validate(raw)
 

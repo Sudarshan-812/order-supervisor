@@ -71,6 +71,9 @@ ActionName = Literal[
     "create_internal_note",
 ]
 
+# How eagerly the classifier wakes the main agent for borderline / unknown events.
+WakeAggressiveness = Literal["passive", "balanced", "aggressive"]
+
 
 # --------------------------------------------------------------------------- #
 # Supervisor templates
@@ -78,14 +81,43 @@ ActionName = Literal[
 class SupervisorCreate(BaseModel):
     name: str
     base_instruction: str
-    # Stored in the `model_config` JSONB column. Named `model_settings` here
+    # First-class config knobs (assignment: available actions, default wake
+    # behaviour, wake aggressiveness). Persisted inside the `model_config` JSONB
+    # column together with `extra`.
+    allowed_actions: list[ActionName] = Field(default_factory=list)  # [] == all 5
+    default_wake_minutes: int = 60
+    wake_aggressiveness: WakeAggressiveness = "balanced"
+    # Free-form escape hatch (model name, temperature, ...). Named `extra` here
     # because `model_config` is reserved by pydantic v2.
-    model_settings: dict[str, Any] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    def to_model_config(self) -> dict[str, Any]:
+        return {
+            "allowed_actions": self.allowed_actions,
+            "default_wake_minutes": self.default_wake_minutes,
+            "wake_aggressiveness": self.wake_aggressiveness,
+            **self.extra,
+        }
 
 
-class Supervisor(SupervisorCreate):
+class Supervisor(BaseModel):
     id: str
+    name: str
+    base_instruction: str
+    model_settings: dict[str, Any]  # raw `model_config` JSONB
     created_at: datetime
+
+    @property
+    def allowed_actions(self) -> list[str]:
+        return list(self.model_settings.get("allowed_actions", []))
+
+    @property
+    def default_wake_minutes(self) -> int:
+        return int(self.model_settings.get("default_wake_minutes", 60))
+
+    @property
+    def wake_aggressiveness(self) -> str:
+        return str(self.model_settings.get("wake_aggressiveness", "balanced"))
 
 
 # --------------------------------------------------------------------------- #
@@ -175,6 +207,9 @@ class AgentDecision(BaseModel):
     actions: list[AgentAction] = Field(default_factory=list)
     new_memory_summary: str
     next_sleep_seconds: int = Field(ge=1)
+    # Optional: agent-authored hints the lightweight classifier uses on future
+    # events ("wake immediately on refund_requested", ...). "" == keep current.
+    wakeup_guidance: str = ""
     recommend_completion: bool = False
     completion_reason: str | None = None
 

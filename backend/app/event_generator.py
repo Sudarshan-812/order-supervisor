@@ -1,16 +1,17 @@
 """Event generator / simulator.
 
 Two ways to use it:
-  * CLI:   python -m app.event_generator <run_id> --scenario happy_path
-  * import: `SCENARIOS` is also reused by an optional API route.
+  * CLI:   python -m app.event_generator <run_id> --scenario payment_trouble
+  * API:   POST /api/runs/{run_id}/simulate?scenario=payment_trouble
+           (app.api.routes imports SCENARIOS from here)
 
-It sends events into a run by calling the FastAPI endpoint
-POST /api/runs/{run_id}/events (which forwards them as `order_event` signals),
-so it exercises the real path.
+The CLI posts each event to POST /api/runs/{run_id}/events (which forwards it as
+an `incoming_event` signal), so it exercises the real path end to end.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 
 SCENARIOS: dict[str, list[dict]] = {
     "happy_path": [
@@ -38,14 +39,34 @@ SCENARIOS: dict[str, list[dict]] = {
     "unknown_event": [
         {"type": "order_created"},
         {"type": "warehouse_fire", "payload": {"severity": "high"}},  # escalation path
+        {"type": "delivered"},
     ],
 }
 
 
-async def send_scenario(run_id: str, scenario: str, *, base_url: str = "http://localhost:8000", delay_s: float = 1.0) -> None:
-    """TODO(scaffold): httpx.AsyncClient loop posting each event with `delay_s`
-    between them so you can watch the agent wake / sleep."""
-    raise NotImplementedError("scaffold: send_scenario")
+async def send_scenario(
+    run_id: str,
+    scenario: str,
+    *,
+    base_url: str = "http://localhost:8000",
+    delay_s: float = 2.0,
+) -> None:
+    """POST each event of `scenario` to the run's /events endpoint, `delay_s`
+    apart. Stops early if the run has already completed (409)."""
+    import httpx
+
+    events = SCENARIOS[scenario]
+    async with httpx.AsyncClient(base_url=base_url, timeout=15) as client:
+        for i, ev in enumerate(events):
+            if i:
+                await asyncio.sleep(delay_s)
+            body = {"payload": {}, **ev}
+            resp = await client.post(f"/api/runs/{run_id}/events", json=body)
+            print(f"  -> {ev['type']:<26} {resp.status_code} {resp.text.strip()[:80]}")
+            if resp.status_code == 409:
+                print("  run is no longer accepting events; stopping.")
+                return
+    print("scenario complete.")
 
 
 def _cli() -> None:
@@ -53,11 +74,12 @@ def _cli() -> None:
     p.add_argument("run_id")
     p.add_argument("--scenario", choices=sorted(SCENARIOS), default="happy_path")
     p.add_argument("--base-url", default="http://localhost:8000")
-    p.add_argument("--delay", type=float, default=1.0)
+    p.add_argument("--delay", type=float, default=2.0)
     args = p.parse_args()
-    import asyncio
-
-    asyncio.run(send_scenario(args.run_id, args.scenario, base_url=args.base_url, delay_s=args.delay))
+    print(f"sending '{args.scenario}' to run {args.run_id} via {args.base_url}")
+    asyncio.run(
+        send_scenario(args.run_id, args.scenario, base_url=args.base_url, delay_s=args.delay)
+    )
 
 
 if __name__ == "__main__":

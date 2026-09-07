@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { ApiError, createSupervisor, listSupervisors } from "@/lib/api";
+import {
+  ApiError,
+  BUSINESS_ACTIONS,
+  WAKE_AGGRESSIVENESS,
+  createSupervisor,
+  listSupervisors,
+} from "@/lib/api";
 import { Button, Field, fmtTime, inputCls, usePoll } from "@/components/ui";
-
-const BUSINESS_ACTIONS_HINT =
-  'optional keys: default_wake_minutes (int), allowed_actions (subset of ' +
-  "message_fulfillment_team, message_payments_team, message_logistics_team, " +
-  "message_customer, create_internal_note; empty = all 5)";
 
 export default function SupervisorsPage() {
   const { data: supervisors, error, refresh } = usePoll(() => listSupervisors(), 5000);
@@ -31,7 +32,7 @@ export default function SupervisorsPage() {
               {s.base_instruction}
             </p>
             <pre className="mt-2 overflow-x-auto rounded bg-neutral-100 p-2 text-xs dark:bg-neutral-900">
-              model_settings = {JSON.stringify(s.model_settings, null, 2)}
+              {JSON.stringify(s.model_settings, null, 2)}
             </pre>
             <p className="mt-1 text-xs text-neutral-500">created {fmtTime(s.created_at)}</p>
           </li>
@@ -46,25 +47,39 @@ function NewTemplateForm({ onCreated }: { onCreated: () => void }) {
   const [baseInstruction, setBaseInstruction] = useState(
     "You supervise a single e-commerce order end to end. Keep the customer informed, chase the right internal team on any exception, and only act when something needs attention.",
   );
-  const [settingsRaw, setSettingsRaw] = useState(
-    '{\n  "default_wake_minutes": 60,\n  "allowed_actions": []\n}',
-  );
+  const [actions, setActions] = useState<string[]>([...BUSINESS_ACTIONS]);
+  const [wakeMinutes, setWakeMinutes] = useState(60);
+  const [aggressiveness, setAggressiveness] =
+    useState<(typeof WAKE_AGGRESSIVENESS)[number]>("balanced");
+  const [extraRaw, setExtraRaw] = useState("{}");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  function toggle(a: string) {
+    setActions((cur) => (cur.includes(a) ? cur.filter((x) => x !== a) : [...cur, a]));
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
-    let model_settings: Record<string, unknown> = {};
+    let extra: Record<string, unknown> = {};
     try {
-      model_settings = settingsRaw.trim() ? JSON.parse(settingsRaw) : {};
+      extra = extraRaw.trim() ? JSON.parse(extraRaw) : {};
     } catch {
-      setMsg({ kind: "err", text: "model_settings is not valid JSON" });
+      setMsg({ kind: "err", text: "extra config is not valid JSON" });
       return;
     }
     setBusy(true);
     try {
-      await createSupervisor({ name, base_instruction: baseInstruction, model_settings });
+      await createSupervisor({
+        name,
+        base_instruction: baseInstruction,
+        // empty selection means "all 5" on the backend
+        allowed_actions: actions.length === BUSINESS_ACTIONS.length ? [] : actions,
+        default_wake_minutes: wakeMinutes,
+        wake_aggressiveness: aggressiveness,
+        extra,
+      });
       setMsg({ kind: "ok", text: "Template created" });
       setName("");
       onCreated();
@@ -102,11 +117,49 @@ function NewTemplateForm({ onCreated }: { onCreated: () => void }) {
         />
       </Field>
 
-      <Field label="model_settings (JSON)" hint={BUSINESS_ACTIONS_HINT}>
+      <Field label="Available actions" hint="unchecking all = all 5 allowed">
+        <div className="grid gap-1 sm:grid-cols-2">
+          {BUSINESS_ACTIONS.map((a) => (
+            <label key={a} className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={actions.includes(a)} onChange={() => toggle(a)} />
+              <span className="font-mono">{a}</span>
+            </label>
+          ))}
+        </div>
+      </Field>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Default wake (minutes)">
+          <input
+            type="number"
+            min={1}
+            className={inputCls}
+            value={wakeMinutes}
+            onChange={(e) => setWakeMinutes(Number(e.target.value) || 60)}
+          />
+        </Field>
+        <Field label="Wake aggressiveness" hint="borderline / unknown events">
+          <select
+            className={inputCls}
+            value={aggressiveness}
+            onChange={(e) =>
+              setAggressiveness(e.target.value as (typeof WAKE_AGGRESSIVENESS)[number])
+            }
+          >
+            {WAKE_AGGRESSIVENESS.map((x) => (
+              <option key={x} value={x}>
+                {x}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+
+      <Field label="Extra model config (JSON)" hint="optional: model name, temperature, ...">
         <textarea
-          className={inputCls + " h-28 font-mono text-xs"}
-          value={settingsRaw}
-          onChange={(e) => setSettingsRaw(e.target.value)}
+          className={inputCls + " h-16 font-mono text-xs"}
+          value={extraRaw}
+          onChange={(e) => setExtraRaw(e.target.value)}
         />
       </Field>
 

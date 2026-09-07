@@ -61,6 +61,41 @@ def test_activity_types_match_schema():
     }
 
 
+def test_workflow_signals_cover_the_assignment():
+    from temporalio.workflow import _Definition
+    from app.temporal.workflows import OrderSupervisorWorkflow
+
+    d = _Definition.must_from_class(OrderSupervisorWorkflow)
+    assert set(d.signals) == {
+        "incoming_event",
+        "manual_instruction",
+        "pause",
+        "resume",
+        "interrupt",
+        "terminate",
+    }
+
+
+def test_classifier_aggressiveness_knob():
+    import asyncio
+    from app.agent import classifier
+
+    # routine event: balanced stays asleep, aggressive wakes
+    v = asyncio.run(classifier.classify({"type": "payment_confirmed"}, aggressiveness="balanced"))
+    assert v.wake_now is False
+    v = asyncio.run(classifier.classify({"type": "payment_confirmed"}, aggressiveness="aggressive"))
+    assert v.wake_now is True
+
+    # agent wake-up guidance forces a wake on an otherwise-routine event
+    v = asyncio.run(
+        classifier.classify(
+            {"type": "shipment_created"},
+            wakeup_guidance="wake immediately on shipment_created for this VIP order",
+        )
+    )
+    assert v.wake_now is True
+
+
 def test_mock_llm_runs_without_key(monkeypatch):
     from app.agent import llm
 

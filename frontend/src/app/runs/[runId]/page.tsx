@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -10,6 +10,11 @@ import {
   getRun,
   injectEvent,
   interruptRun,
+  listScenarios,
+  pauseRun,
+  resumeRun,
+  simulateRun,
+  terminateRun,
   type ActivityLogRow,
 } from "@/lib/api";
 import { Button, Field, StatusBadge, fmtTime, fromNow, inputCls, usePoll } from "@/components/ui";
@@ -37,6 +42,11 @@ export default function RunDetailPage() {
         <h1 className="text-lg font-semibold">
           {run ? run.order_id : runId}
           {run && <span className="ml-2 align-middle"><StatusBadge status={run.status} /></span>}
+          {live?.paused && (
+            <span className="ml-2 align-middle rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-300">
+              paused
+            </span>
+          )}
         </h1>
       </div>
 
@@ -58,7 +68,10 @@ export default function RunDetailPage() {
             <Meta label="updated" value={fmtTime(run?.updated_at)} />
             <Meta label="queued events" value={live ? String(live.queued_events) : "?"} />
             <Meta label="agent wakes" value={live ? String(live.processed_wakes) : "?"} />
-            <Meta label="terminating" value={live ? String(live.terminating) : "?"} />
+            <Meta
+              label="paused"
+              value={live ? String(live.paused) : "?"}
+            />
             <Meta
               label="workflow id"
               value={run?.workflow_id ?? "-"}
@@ -69,6 +82,20 @@ export default function RunDetailPage() {
               <Meta
                 label="standing instructions"
                 value={live.standing_instructions.join(" | ")}
+                className="col-span-full"
+              />
+            )}
+            {live?.wakeup_guidance && (
+              <Meta
+                label="agent wake-up guidance"
+                value={live.wakeup_guidance}
+                className="col-span-full"
+              />
+            )}
+            {live?.last_reasoning && (
+              <Meta
+                label="last agent reasoning"
+                value={live.last_reasoning}
                 className="col-span-full"
               />
             )}
@@ -115,9 +142,15 @@ export default function RunDetailPage() {
               Run is {run?.status}. Signals are disabled.
             </p>
           )}
+          <ScenarioCard runId={runId} disabled={done} onDone={refresh} />
           <InjectEventCard runId={runId} disabled={done} onDone={refresh} />
           <InstructionCard runId={runId} disabled={done} onDone={refresh} />
-          <InterruptCard runId={runId} disabled={done} onDone={refresh} />
+          <LifecycleCard
+            runId={runId}
+            disabled={done}
+            paused={Boolean(live?.paused)}
+            onDone={refresh}
+          />
         </aside>
       </div>
     </section>
@@ -371,7 +404,76 @@ function InstructionCard({
   );
 }
 
-function InterruptCard({
+function LifecycleCard({
+  runId,
+  disabled,
+  paused,
+  onDone,
+}: {
+  runId: string;
+  disabled: boolean;
+  paused: boolean;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  async function act(label: string, fn: () => Promise<unknown>, confirmText?: string) {
+    if (confirmText && !confirm(confirmText)) return;
+    setBusy(label);
+    setMsg(null);
+    try {
+      await fn();
+      setMsg({ kind: "ok", text: `${label} sent` });
+      onDone();
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof ApiError ? `${err.status}: ${err.message}` : String(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card title="Lifecycle">
+      <div className="flex flex-wrap gap-2">
+        {paused ? (
+          <Button type="button" disabled={disabled || !!busy} onClick={() => act("resume", () => resumeRun(runId))}>
+            {busy === "resume" ? "..." : "Resume"}
+          </Button>
+        ) : (
+          <Button type="button" disabled={disabled || !!busy} onClick={() => act("pause", () => pauseRun(runId))}>
+            {busy === "pause" ? "..." : "Pause"}
+          </Button>
+        )}
+        <Button
+          type="button"
+          disabled={disabled || !!busy}
+          onClick={() => act("interrupt", () => interruptRun(runId))}
+          title="Force an immediate agent wake to re-assess (non-terminal)"
+        >
+          {busy === "interrupt" ? "..." : "Interrupt (wake now)"}
+        </Button>
+        <Button
+          type="button"
+          disabled={disabled || !!busy}
+          onClick={() =>
+            act(
+              "terminate",
+              () => terminateRun(runId),
+              "Terminate this run? The workflow will produce a final report and exit.",
+            )
+          }
+          className="border-amber-400 text-amber-800 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950"
+        >
+          {busy === "terminate" ? "..." : "Terminate"}
+        </Button>
+      </div>
+      <Note msg={msg} />
+    </Card>
+  );
+}
+
+function ScenarioCard({
   runId,
   disabled,
   onDone,
@@ -380,16 +482,26 @@ function InterruptCard({
   disabled: boolean;
   onDone: () => void;
 }) {
+  const [scenarios, setScenarios] = useState<Record<string, string[]>>({});
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
-  async function go() {
-    if (!confirm("Interrupt this run? The workflow will produce a final report and exit.")) return;
+  useEffect(() => {
+    listScenarios()
+      .then((s) => {
+        setScenarios(s);
+        setName(Object.keys(s)[0] ?? "");
+      })
+      .catch(() => setScenarios({}));
+  }, []);
+
+  async function run() {
     setBusy(true);
     setMsg(null);
     try {
-      await interruptRun(runId);
-      setMsg({ kind: "ok", text: "interrupt sent" });
+      const r = await simulateRun(runId, name);
+      setMsg({ kind: "ok", text: `playing: ${r.events.join(" -> ")}` });
       onDone();
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof ApiError ? `${err.status}: ${err.message}` : String(err) });
@@ -399,14 +511,25 @@ function InterruptCard({
   }
 
   return (
-    <Card title="Interrupt (manual termination)">
-      <Button
-        type="button"
-        onClick={go}
-        disabled={disabled || busy}
-        className="border-amber-400 text-amber-800 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950"
+    <Card title="Event generator">
+      <select
+        className={inputCls}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        disabled={disabled}
       >
-        {busy ? "..." : "Interrupt run"}
+        {Object.keys(scenarios).length === 0 && <option value="">(no scenarios)</option>}
+        {Object.entries(scenarios).map(([k, evs]) => (
+          <option key={k} value={k}>
+            {k} ({evs.length})
+          </option>
+        ))}
+      </select>
+      {name && scenarios[name] && (
+        <p className="text-xs text-neutral-500">{scenarios[name].join(" -> ")}</p>
+      )}
+      <Button type="button" onClick={run} disabled={disabled || busy || !name}>
+        {busy ? "starting..." : "Run scenario"}
       </Button>
       <Note msg={msg} />
     </Card>
